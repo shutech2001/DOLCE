@@ -1,6 +1,6 @@
 # DOLCE
 
-Materials for **""DOLCE: Decomposing Off-Policy Evaluation/Learning into Lagged and Current Effects"**.
+Materials for [**""DOLCE: Decomposing Off-Policy Evaluation/Learning into Lagged and Current Effects"**](https://arxiv.org/abs/2505.00961).
 
 ## What is this repo?
 

@@ -44,12 +44,11 @@ poetry env info --path
 
 ## Citation
 ```
-@misc{tamano2025dolce,
-    title = {{DOLCE}: Decomposing Off-Policy Evaluation/Learning into Lagged and Current Effects},
-    publisher = {arXiv},
-    author = {Tamano, Shu and Nojima, Masanori},
-    year = {2025},
-    note = {arXiv:2505.00961},
+@article{tamano2025dolce,
+    author={Tamano, Shu and Nojima, Masanori},
+    title={{DOLCE}: Decomposing Off-Policy Evaluation/Learning into Lagged and Current Effects},
+    journal={arXiv preprint arXiv:2505.00961},
+    year={2025},
 }
 ```
 

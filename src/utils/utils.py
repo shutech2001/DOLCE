@@ -48,7 +48,7 @@ def sample_action(pi: NDArray, random_state: int = 42) -> NDArray:
 
 
 def aggregate_simulation_results(
-    estimated_policy_value_list: List[NDArray],
+    estimated_policy_value_list: List[float],
     policy_value: float,
     experiment_config_name: str,
     experiment_config_value: int,

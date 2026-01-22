@@ -4,6 +4,8 @@ from typing import Optional
 
 import numpy as np
 from numpy.typing import NDArray
+from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPRegressor
 import torch
 from torch.types import Tensor
 import torch.nn as nn
@@ -308,3 +310,39 @@ def train_reward_model(
         dataset["x_t"],
         dataset["x_t_l"],
     )
+
+
+def fit_predict_by_MLP(
+    features: NDArray,
+    actions: NDArray,
+    rewards: NDArray,
+    num_actions: int,
+    hidden_layer_sizes: tuple = (50, 50, 50),
+    random_state: int = 42,
+) -> NDArray:
+    """Fit and predict the reward function using a single MLP on (x, a) and predict all actions.
+
+    Args:
+        features (NDArray): features
+        actions (NDArray): actions
+        rewards (NDArray): rewards
+        num_actions (int): number of actions
+        hidden_layer_sizes (tuple, optional): hidden layer sizes. Defaults to (50, 50, 50).
+        random_state (int, optional): random state. Defaults to 42.
+
+    Returns:
+        NDArray: predicted rewards
+    """
+    model = MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, random_state=random_state)
+    X = np.hstack((features, actions[:, None]))
+    scaler = StandardScaler()
+    X_ = scaler.fit_transform(X)
+    model.fit(X_, rewards)
+
+    num_data = features.shape[0]
+    actions_all = np.tile(np.arange(num_actions), num_data)
+    features_rep = np.repeat(features, num_actions, axis=0)
+    X_all = np.hstack((features_rep, actions_all[:, None]))
+    X_all_scaled = scaler.transform(X_all)
+    q_hat = model.predict(X_all_scaled)
+    return q_hat.reshape(num_data, num_actions)

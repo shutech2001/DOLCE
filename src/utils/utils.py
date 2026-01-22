@@ -8,6 +8,31 @@ import pandas as pd
 from scipy.stats import rankdata  # type: ignore
 
 
+def parse_comma_separated_list(raw: str) -> List:
+    """Parse a comma-separated list of floats.
+
+    Args:
+        raw (str): comma-separated list of floats
+
+    Raises:
+        ValueError: if the list is empty
+        ValueError: if the list contains invalid values
+
+    Returns:
+        List[float]: list of floats
+    """
+    values: List[float] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        value = float(item)
+        values.append(value)
+    if not values:
+        raise ValueError("values are empty")
+    return values
+
+
 def eps_greedy_policy(
     q_func: NDArray,
     k: int = 1,

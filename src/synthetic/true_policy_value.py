@@ -14,6 +14,10 @@ def calc_true_value(
     non_overlap_ratio: float,
     lambda_: float,
     eta: float = 0.0,
+    *,
+    env_random_state: int | None = None,
+    data_random_state: int | None = None,
+    eps: float = 0.1,
 ) -> float:
     """Calculate the true value of the policy value using synthetic data
 
@@ -34,7 +38,9 @@ def calc_true_value(
         non_overlap_ratio=non_overlap_ratio,
         lambda_=lambda_,
         eta=eta,
+        env_random_state=env_random_state,
+        data_random_state=data_random_state,
     )
     q: NDArray = test_data["q"]
-    pi: NDArray = eps_greedy_policy(q)
+    pi: NDArray = eps_greedy_policy(q, eps=eps)
     return (q * pi).sum(1).mean()

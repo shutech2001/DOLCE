@@ -109,7 +109,7 @@ def generate_synthetic_data(
             reward_if_not_action = rng_env.uniform(-0.1, 0.1)
             h_x_t_l_a_t[:, a] += np.where(x_t_l[:, x] > 0.5, reward_if_action, reward_if_not_action)
     # add more rewards if act when two or more of x_{t_l}_i (num_features > i > 1) are greater
-    large_count: NDArray = np.sum(x_t_l[:, 1 : num_features - 1] > 0.5, axis=1)  # noqa: E203
+    large_count = np.sum(x_t_l[:, 1 : num_features - 1] > 0.5, axis=1)  # noqa: E203
     h_x_t_l_a_t[:, 0] += np.where(large_count >= 2, -0.7, 0)
     for a in range(1, num_actions):
         reward_if_action = rng_env.uniform(0.7, 1.3)

@@ -727,7 +727,15 @@ class DOLCE:
                     log_bar_pi_factual = log_bar_pi[idx_local, a_test]
 
                     term = w_factual * (r_test - q_hat_factual) * log_bar_pi_factual
-                    term += torch.sum(q_hat_test * pi_test * log_prob_test, dim=1)
+
+                    # IMPORTANT:
+                    # The second term corresponds to the policy-gradient component
+                    #   sum_a pi_theta(a|x) q_hat(x,lag,a) s_theta(a|x).
+                    # If we implement it via a surrogate objective with log-probabilities,
+                    # we must treat pi_theta(a|x) as a *coefficient* (detach) to avoid an
+                    # extra (and incorrect) gradient term coming from d/dtheta pi_theta.
+                    current_policy_test = pi_test.detach()
+                    term += torch.sum(q_hat_test * current_policy_test * log_prob_test, dim=1)
                     fold_term = fold_term + float(lag_weights[lag_idx]) * term.sum()
 
                 total_term += fold_term

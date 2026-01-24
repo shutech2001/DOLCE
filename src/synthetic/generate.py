@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,6 +18,15 @@ def generate_synthetic_data(
     eta: float = 0.0,
     beta: float = 0.3,
     random_state: int = 42,
+    *,
+    # env_random_state controls *environment parameters* (reward function coefficients)
+    # data_random_state controls *data sampling* (x's, a's, and reward noise)
+    # If you do not specify them, we keep the old behavior (env and data both tied to
+    # random_state) for backward compatibility.
+    env_random_state: Optional[int] = None,
+    data_random_state: Optional[int] = None,
+    x_noise_scale: float = 3.0,
+    reward_noise_scale: float = 1.0,
 ) -> Dict:
     """Generate synthetic data for off-policy evaluation/learning
 
@@ -42,11 +51,22 @@ def generate_synthetic_data(
         raise ValueError("num_features must be a positive integer.")
     if num_actions < 2:
         raise ValueError("num_actions must be an integer greater than or equal to 2.")
-    np.random.seed(random_state)
+    if env_random_state is None:
+        env_random_state = random_state
+    if data_random_state is None:
+        data_random_state = random_state
+
+    rng_env = np.random.RandomState(env_random_state)
+    rng_data = np.random.RandomState(data_random_state)
+
     # features at time t-l
-    x_t_l: NDArray = np.random.normal(size=(num_data, num_features))
+    x_t_l: NDArray = rng_data.normal(size=(num_data, num_features))
     # features at time t based on features at time t-l
-    x_t: NDArray = np.random.normal(loc=x_t_l, scale=3, size=(num_data, num_features))
+    x_t: NDArray = rng_data.normal(
+        loc=x_t_l,
+        scale=x_noise_scale,
+        size=(num_data, num_features),
+    )
 
     # define reward function
     # q = lambda_*g_x_t_a_t + (1-lambda_)*h_x_t_l_a_t + eta*u_x_t_x_t_l_a_t
@@ -55,22 +75,22 @@ def generate_synthetic_data(
     # effect of x_t_1
     g_x_t_a_t[:, 0] += np.where(x_t[:, 0] > 0.5, -0.2, 0.2)
     for a in range(1, num_actions):
-        reward_if_action = np.random.uniform(0.4, 0.9)
-        reward_if_not_action = np.random.uniform(-0.1, 0.1)
+        reward_if_action = rng_env.uniform(0.4, 0.9)
+        reward_if_not_action = rng_env.uniform(-0.1, 0.1)
         g_x_t_a_t[:, a] += np.where(x_t[:, 0] > 0.5, reward_if_action, reward_if_not_action)
     # effect of x_t_i (num_features > i > 1)
     for x in range(1, num_features - 1):
         g_x_t_a_t[:, 0] += np.where(x_t[:, x] > 0.5, -0.2, 0.2)
         for a in range(1, num_actions):
-            reward_if_action = np.random.uniform(0.4, 0.9)
-            reward_if_not_action = np.random.uniform(-0.1, 0.1)
+            reward_if_action = rng_env.uniform(0.4, 0.9)
+            reward_if_not_action = rng_env.uniform(-0.1, 0.1)
             g_x_t_a_t[:, a] += np.where(x_t[:, x] > 0.5, reward_if_action, reward_if_not_action)
     # add more rewards if act when two or more of x_t_i (num_features > i > 1) are greater
     large_count: NDArray = np.sum(x_t[:, 1 : num_features - 1] > 0.5, axis=1)  # noqa: E203
     g_x_t_a_t[:, 0] += np.where(large_count >= 2, -0.7, 0)
     for a in range(1, num_actions):
-        reward_if_action = np.random.uniform(0.7, 1.3)
-        reward_if_not_action = np.random.uniform(-0.1, 0.1)
+        reward_if_action = rng_env.uniform(0.7, 1.3)
+        reward_if_not_action = rng_env.uniform(-0.1, 0.1)
         g_x_t_a_t[:, a] += np.where(large_count >= 2, 1, 0)
 
     # define h(x_{t_l}, a_t)
@@ -78,22 +98,22 @@ def generate_synthetic_data(
     # effect of x_{t-l}_1
     h_x_t_l_a_t[:, 0] += np.where(x_t_l[:, 0] > 0.5, -0.2, 0.2)
     for a in range(1, num_actions):
-        reward_if_action = np.random.uniform(0.4, 0.9)
-        reward_if_not_action = np.random.uniform(-0.1, 0.1)
+        reward_if_action = rng_env.uniform(0.4, 0.9)
+        reward_if_not_action = rng_env.uniform(-0.1, 0.1)
         h_x_t_l_a_t[:, a] += np.where(x_t_l[:, 0] > 0.5, reward_if_action, reward_if_not_action)
     # effect of x_{t-l}_i (num_features > i > 1)
     for x in range(1, num_features - 1):
         h_x_t_l_a_t[:, 0] += np.where(x_t_l[:, x] > 0.5, -0.2, 0.2)
         for a in range(1, num_actions):
-            reward_if_action = np.random.uniform(0.4, 0.9)
-            reward_if_not_action = np.random.uniform(-0.1, 0.1)
+            reward_if_action = rng_env.uniform(0.4, 0.9)
+            reward_if_not_action = rng_env.uniform(-0.1, 0.1)
             h_x_t_l_a_t[:, a] += np.where(x_t_l[:, x] > 0.5, reward_if_action, reward_if_not_action)
     # add more rewards if act when two or more of x_{t_l}_i (num_features > i > 1) are greater
     large_count: NDArray = np.sum(x_t_l[:, 1 : num_features - 1] > 0.5, axis=1)  # noqa: E203
     h_x_t_l_a_t[:, 0] += np.where(large_count >= 2, -0.7, 0)
     for a in range(1, num_actions):
-        reward_if_action = np.random.uniform(0.7, 1.3)
-        reward_if_not_action = np.random.uniform(-0.1, 0.1)
+        reward_if_action = rng_env.uniform(0.7, 1.3)
+        reward_if_not_action = rng_env.uniform(-0.1, 0.1)
         h_x_t_l_a_t[:, a] += np.where(large_count >= 2, 1, 0)
     u_x_t_x_t_l_a_t: NDArray = np.zeros((num_data, num_actions))
     base = x_t[:, 0] * x_t_l[:, 0]
@@ -102,14 +122,16 @@ def generate_synthetic_data(
     if num_features > 2:
         base += 0.25 * np.sin(x_t[:, 2] - x_t_l[:, 2])
     for a in range(num_actions):
-        coef = np.random.uniform(0.3, 0.7) * (1.0 if a % 2 == 0 else -1.0)
+        coef = rng_env.uniform(0.3, 0.7) * (1.0 if a % 2 == 0 else -1.0)
         u_x_t_x_t_l_a_t[:, a] = coef * np.tanh(base)
 
     q = lambda_ * g_x_t_a_t + (1 - lambda_) * h_x_t_l_a_t + eta * u_x_t_x_t_l_a_t
 
     # define logging policy using current context only
     pi_0: NDArray = softmax(beta * g_x_t_a_t, axis=1)
-    a_t: NDArray = sample_action(pi_0, random_state * 2)
+    # Use the data RNG for action sampling so that (env_random_state, data_random_state)
+    # cleanly separates environment parameters vs sampling randomness.
+    a_t: NDArray = sample_action(pi_0, random_state * 2, rng=rng_data)
 
     # For a certain feature, it is assumed that there is no intervention when the condition is met.
     percentile = np.percentile(x_t[:, 0], (1 - non_overlap_ratio) * 100)
@@ -121,7 +143,8 @@ def generate_synthetic_data(
 
     # define reward
     q_fact: NDArray = q[np.arange(num_data), a_t]
-    r: NDArray = np.random.normal(q_fact)
+    # Reward noise should use the data RNG as well (not the env RNG).
+    r: NDArray = rng_data.normal(loc=q_fact, scale=reward_noise_scale)
 
     return dict(
         num_data=num_data,

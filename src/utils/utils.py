@@ -54,7 +54,11 @@ def eps_greedy_policy(
     return pi / pi.sum(1)[:, np.newaxis]
 
 
-def sample_action(pi: NDArray, random_state: int = 42) -> NDArray:
+def sample_action(
+    pi: NDArray,
+    random_state: int = 42,
+    rng: np.random.RandomState | None = None,
+) -> NDArray:
     """Sample action from the policy
 
     Args:
@@ -64,8 +68,14 @@ def sample_action(pi: NDArray, random_state: int = 42) -> NDArray:
     Returns:
         NDArray: sampled action
     """
-    np.random.seed(random_state)
-    uniform_rvs: NDArray = np.random.uniform(size=pi.shape[0])[:, np.newaxis]
+    # NOTE:
+    # Avoid resetting the *global* RNG state (np.random.seed). Resetting the
+    # global RNG couples randomness across the codebase and makes Monte-Carlo
+    # experiments hard to interpret.
+    if rng is None:
+        rng = np.random.RandomState(random_state)
+
+    uniform_rvs: NDArray = rng.uniform(size=pi.shape[0])[:, np.newaxis]
     cum_pi: NDArray = pi.cumsum(axis=1)
     flg: NDArray = cum_pi > uniform_rvs  # if cumulated probability is greater than random value
     actions: NDArray = flg.argmax(axis=1)

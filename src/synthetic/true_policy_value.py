@@ -19,6 +19,7 @@ def calc_true_value(
     num_mc: int = 100000,
     logging_eps: float = 0.0,
     x_t_dep: float = 1.0,
+    lag_scale: float = 1.0,
 ) -> float:
     """Calculate the true value of the epsilon-greedy policy (Monte Carlo).
 
@@ -37,6 +38,7 @@ def calc_true_value(
         env_random_state=env_random_state,
         logging_eps=logging_eps,
         x_t_dep=x_t_dep,
+        lag_scale=lag_scale,
     )
     q = test_data["q"]
     pi = eps_greedy_policy(q)

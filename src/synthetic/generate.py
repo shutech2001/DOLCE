@@ -19,6 +19,7 @@ def generate_synthetic_data(
     env_random_state: int = 0,  # ★追加：環境固定用
     logging_eps: float = 0.0,
     x_t_dep: float = 1.0,
+    lag_scale: float = 1.0,
 ) -> dict:
     """Generate synthetic data for off-policy evaluation with separated RNG.
 
@@ -27,6 +28,7 @@ def generate_synthetic_data(
     eta               : strength of x_t/x_t_l interaction term (eta=0 keeps additive structure)
     logging_eps       : exploration floor for the logging policy (before support violation)
     x_t_dep           : dependence strength of x_t on x_{t-l} (0 = independent)
+    lag_scale         : scale factor for lag reward component (h)
     """
     if num_features < 1:
         raise ValueError("num_features must be a positive integer.")
@@ -97,7 +99,7 @@ def generate_synthetic_data(
             coef = rng_env.uniform(0.3, 0.7) * (1.0 if a % 2 == 0 else -1.0)
             u_x_t_x_t_l_a_t[:, a] = coef * np.tanh(base)
 
-    q = lambda_ * g_x_t_a_t + (1 - lambda_) * h_x_t_l_a_t + eta * u_x_t_x_t_l_a_t
+    q = lambda_ * g_x_t_a_t + (1 - lambda_) * (lag_scale * h_x_t_l_a_t) + eta * u_x_t_x_t_l_a_t
 
     # logging policy depends only on current context (current-action sufficiency)
     pi_0 = softmax(beta * g_x_t_a_t, axis=1)
@@ -122,13 +124,14 @@ def generate_synthetic_data(
         num_actions=num_actions,
         non_overlap_ratio=non_overlap_ratio,
         eta=eta,
+        lag_scale=lag_scale,
         x_t=x_t,
         x_t_l=x_t_l,
         a_t=a_t,
         r=r,
         pi_0=pi_0,
         g_x_t_a_t=lambda_ * g_x_t_a_t,
-        h_x_t_l_a_t=(1 - lambda_) * h_x_t_l_a_t,
+        h_x_t_l_a_t=(1 - lambda_) * (lag_scale * h_x_t_l_a_t),
         u_x_t_x_t_l_a_t=eta * u_x_t_x_t_l_a_t,
         q=q,
     )

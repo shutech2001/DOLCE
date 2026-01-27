@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from scipy.spatial import cKDTree
+from sklearn.dummy import DummyRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
@@ -69,7 +70,8 @@ class RIAdditiveRewardConfig:
     g_lr: float = 1e-2
     g_weight_decay: float = 1e-4
     g_batch_size: int = 256
-    g_epochs: int = 80
+    g_epochs: int = 120
+    g_knn_k: int = 3
 
     # h-model (sklearn MLPRegressor, fast)
     h_hidden: Tuple[int, ...] = (50, 50)
@@ -77,6 +79,8 @@ class RIAdditiveRewardConfig:
     h_alpha: float = 1e-4
     h_early_stopping: bool = True
     h_validation_fraction: float = 0.2
+    h_action_specific: bool = True
+    h_min_samples: int = 20
 
     dropout: float = 0.0
     seed: int = 0
@@ -91,8 +95,10 @@ def _make_folds(n: int, n_folds: int, seed: int) -> List[NDArray[np.int64]]:
     return [np.sort(block).astype(np.int64) for block in np.array_split(perm, n_folds)]
 
 
-def _build_pairs_nn_by_action(x_lag: NDArray, a: NDArray) -> Tuple[NDArray[np.int64], NDArray[np.int64]]:
-    """For each sample, pick a 1-NN within the same action group (in x_lag space)."""
+def _build_pairs_nn_by_action(
+    x_lag: NDArray, a: NDArray, k: int = 1
+) -> Tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """For each sample, pick k-NN within the same action group (in x_lag space)."""
     i_list = []
     j_list = []
     for act in np.unique(a):
@@ -100,10 +106,14 @@ def _build_pairs_nn_by_action(x_lag: NDArray, a: NDArray) -> Tuple[NDArray[np.in
         if idx.size < 2:
             continue
         tree = cKDTree(x_lag[idx])
-        _, nn = tree.query(x_lag[idx], k=2)
-        nn2 = nn[:, 1]
-        i_list.append(idx)
-        j_list.append(idx[nn2])
+        k_eff = min(k + 1, idx.size)
+        _, nn = tree.query(x_lag[idx], k=k_eff)
+        if k_eff <= 1:
+            continue
+        nn = nn[:, 1:]
+        for col in range(nn.shape[1]):
+            i_list.append(idx)
+            j_list.append(idx[nn[:, col]])
     if len(i_list) == 0:
         return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
     return np.concatenate(i_list).astype(np.int64), np.concatenate(j_list).astype(np.int64)
@@ -120,7 +130,7 @@ def _train_g_pairwise(
     """Train g(x,a) using pairwise differences within same action and similar lag."""
     _set_torch_seed(cfg.seed)
 
-    i_idx, j_idx = _build_pairs_nn_by_action(x_lag, a)
+    i_idx, j_idx = _build_pairs_nn_by_action(x_lag, a, k=cfg.g_knn_k)
     if i_idx.size == 0:
         # Degenerate fallback
         model = MLPScalar(in_dim=x.shape[1] + num_actions, hidden_sizes=cfg.g_hidden, dropout=cfg.dropout).to(
@@ -209,6 +219,54 @@ def _predict_h_sklearn(
     return reg.predict(X).astype(np.float64)
 
 
+def _fit_h_sklearn_actionwise(
+    x_lag: NDArray,
+    residual: NDArray,
+    a: NDArray,
+    num_actions: int,
+    cfg: RIAdditiveRewardConfig,
+) -> Tuple[List[StandardScaler], List[MLPRegressor]]:
+    scalers: List[StandardScaler] = []
+    regs: List[MLPRegressor] = []
+    for action in range(num_actions):
+        idx = np.where(a == action)[0]
+        scaler = StandardScaler()
+        if idx.size < cfg.h_min_samples:
+            # Fallback to a constant predictor to avoid early_stopping split on tiny samples.
+            scaler.fit(x_lag[: min(x_lag.shape[0], 1)])
+            const = float(residual[idx].mean()) if idx.size > 0 else float(residual.mean())
+            reg = DummyRegressor(strategy="constant", constant=const)
+            reg.fit(scaler.transform(x_lag[: min(x_lag.shape[0], 1)]), np.array([const]))
+        else:
+            reg = MLPRegressor(
+                hidden_layer_sizes=cfg.h_hidden,
+                max_iter=cfg.h_max_iter,
+                alpha=cfg.h_alpha,
+                early_stopping=cfg.h_early_stopping,
+                validation_fraction=cfg.h_validation_fraction,
+                random_state=cfg.seed + 999 + action,
+            )
+            X = scaler.fit_transform(x_lag[idx])
+            reg.fit(X, residual[idx])
+        scalers.append(scaler)
+        regs.append(reg)
+    return scalers, regs
+
+
+def _predict_h_sklearn_actionwise(
+    scalers: List[StandardScaler],
+    regs: List[MLPRegressor],
+    x_lag: NDArray,
+) -> NDArray:
+    num_actions = len(regs)
+    n = x_lag.shape[0]
+    out = np.zeros((n, num_actions), dtype=np.float64)
+    for action, (scaler, reg) in enumerate(zip(scalers, regs)):
+        X = scaler.transform(x_lag)
+        out[:, action] = reg.predict(X).astype(np.float64)
+    return out
+
+
 def train_predict_ri_additive_crossfit(
     x: NDArray,
     x_lag: NDArray,
@@ -251,12 +309,22 @@ def train_predict_ri_additive_crossfit(
         g_tr_fact = g_tr_all[np.arange(train_idx.shape[0]), a[train_idx]]
         residual_tr = r[train_idx] - g_tr_fact
 
-        scaler_h, h_reg = _fit_h_sklearn(x_lag=x_lag[train_idx], residual=residual_tr, cfg=cfg_k)
-
         g_te_all = _predict_g_all_actions(g_model, x[fold_idx], num_actions, device=cfg_k.device)
-        h_te = _predict_h_sklearn(scaler_h, h_reg, x_lag[fold_idx])
 
-        q_hat[fold_idx] = g_te_all + h_te[:, None]
+        if cfg_k.h_action_specific:
+            scalers_h, regs_h = _fit_h_sklearn_actionwise(
+                x_lag=x_lag[train_idx],
+                residual=residual_tr,
+                a=a[train_idx],
+                num_actions=num_actions,
+                cfg=cfg_k,
+            )
+            h_te_all = _predict_h_sklearn_actionwise(scalers_h, regs_h, x_lag[fold_idx])
+            q_hat[fold_idx] = g_te_all + h_te_all
+        else:
+            scaler_h, h_reg = _fit_h_sklearn(x_lag=x_lag[train_idx], residual=residual_tr, cfg=cfg_k)
+            h_te = _predict_h_sklearn(scaler_h, h_reg, x_lag[fold_idx])
+            q_hat[fold_idx] = g_te_all + h_te[:, None]
 
     info = {
         "q_hat_mean": float(np.mean(q_hat)),
@@ -632,5 +700,50 @@ def fit_predict_by_MLP_actionwise(
         X = scaler.fit_transform(features[idx])
         model.fit(X, rewards[idx])
         q_hat[:, a] = model.predict(scaler.transform(features))
+
+    return q_hat
+
+
+def fit_predict_by_MLP_actionwise_crossfit(
+    features: NDArray,
+    actions: NDArray,
+    rewards: NDArray,
+    num_actions: int,
+    n_folds: int = 2,
+    hidden_layer_sizes: Tuple[int, ...] = (30, 30),
+    random_state: int = 42,
+    min_samples: int = 10,
+    folds: Optional[List[NDArray[np.int64]]] = None,
+) -> NDArray:
+    """Cross-fitted actionwise MLP to avoid in-sample optimism."""
+    n = features.shape[0]
+    if folds is None:
+        folds = _make_folds(n, n_folds, random_state)
+    q_hat = np.zeros((n, num_actions), dtype=np.float64)
+
+    for k, fold_idx in enumerate(folds):
+        if fold_idx.size == 0:
+            continue
+        if n_folds <= 1:
+            train_idx = fold_idx
+        else:
+            mask = np.ones(n, dtype=bool)
+            mask[fold_idx] = False
+            train_idx = np.where(mask)[0]
+
+        q_hat_fold = np.zeros((fold_idx.shape[0], num_actions), dtype=np.float64)
+        for a in range(num_actions):
+            idx = train_idx[actions[train_idx] == a]
+            if idx.size < min_samples:
+                const = float(np.mean(rewards[train_idx])) if train_idx.size > 0 else 0.0
+                q_hat_fold[:, a] = const
+                continue
+            model = MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, random_state=random_state + 100 * k + a)
+            scaler = StandardScaler()
+            X_tr = scaler.fit_transform(features[idx])
+            model.fit(X_tr, rewards[idx])
+            q_hat_fold[:, a] = model.predict(scaler.transform(features[fold_idx]))
+
+        q_hat[fold_idx] = q_hat_fold
 
     return q_hat

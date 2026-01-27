@@ -11,4 +11,5 @@ from .reward import (  # noqa: F401
     fit_predict_by_MLP,
     fit_predict_by_MLP_for_all_actions,
     fit_predict_by_MLP_actionwise,
+    fit_predict_by_MLP_actionwise_crossfit,
 )

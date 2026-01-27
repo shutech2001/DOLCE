@@ -18,6 +18,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from estimating import LaggedPolicyEstimatorTorch  # noqa: E402
 from estimating import RIAdditiveRewardConfig, estimate_alc_knn, train_predict_ri_additive_crossfit  # noqa: E402
+from estimating.overlap_adaptive import adaptive_clip, unsupported_mass  # noqa: E402
 from synthetic import generate_synthetic_data  # noqa: E402
 from opl import RegressionBasedPolicyLearner, GradientBasedPolicyLearner, DOLCE  # noqa: E402
 
@@ -254,8 +255,12 @@ def _estimate_dolce_gradient(
             bar_pi_theta = estimator.estimate_bar_pi(lag_tensor[test_idx_t], lag_tensor[train_idx_t], pi_train)
             bar_pi_0 = bar_pi_0_tensor[test_idx_t]
             w = (bar_pi_theta / bar_pi_0).detach()
-            if dolce.weight_clip is not None:
-                w = torch.clamp(w, max=dolce.weight_clip)
+            clip_value = dolce.weight_clip
+            if clip_value is None and "pi_0" in logged_data:
+                u_mass = unsupported_mass(pi_all.detach().cpu().numpy(), logged_data["pi_0"], eps=dolce.log_eps)
+                clip_value = adaptive_clip(u_mass)
+            if clip_value is not None:
+                w = torch.clamp(w, max=clip_value)
             log_bar_pi = torch.log(bar_pi_theta + dolce.log_eps)
             log_bar_pi_factual = log_bar_pi[torch.arange(test_idx_t.shape[0]), a_test]
 

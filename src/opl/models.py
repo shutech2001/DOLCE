@@ -20,6 +20,7 @@ from estimating.reward import (
     train_predict_ri_additive_crossfit,
     _make_folds,
 )
+from estimating.overlap_adaptive import adaptive_clip, unsupported_mass
 
 
 @dataclass
@@ -484,7 +485,7 @@ class DOLCE:
         imit_reg (float, optional): imitation regularization. Defaults to 0.0.
         log_eps (float, optional): log epsilon. Defaults to 1e-10.
         bandwidth (float, optional): bandwidth. Defaults to 1.0.
-        weight_clip (float, optional): weight clip. Defaults to 100.0.
+        weight_clip (Optional[float], optional): weight clip. Defaults to None.
         tau (float, optional): tau. Defaults to 0.1.
         num_folds (int, optional): number of folds. Defaults to 2.
         solver (str, optional): solver. Defaults to "adagrad".
@@ -503,7 +504,7 @@ class DOLCE:
     imit_reg: float = 0.0
     log_eps: float = 1e-10
     bandwidth: float = 1.0
-    weight_clip: float = 100.0
+    weight_clip: Optional[float] = None
     tau: float = 0.1
     num_folds: int = 2
     solver: str = "adagrad"
@@ -701,6 +702,7 @@ class DOLCE:
         q_train, q_test = dataset["q"], dataset_test["q"]
         n = x_t.shape[0]
         x_t_tensor = torch.from_numpy(x_t).float()
+        pi_0_tensor_np = pi_0
         a_t_tensor = torch.from_numpy(a_t).long()
         r_tensor = torch.from_numpy(r).float()
         lag_tensors = [torch.from_numpy(lag).float() for lag in lag_features_list]
@@ -710,6 +712,10 @@ class DOLCE:
             self.nn_model.train()
             pi_all = self.nn_model(x_t_tensor)
             log_prob_all = torch.log(pi_all + self.log_eps)
+            clip_value = self.weight_clip
+            if clip_value is None and pi_0_tensor_np is not None:
+                u_mass = unsupported_mass(pi_all.detach().cpu().numpy(), pi_0_tensor_np, eps=self.log_eps)
+                clip_value = adaptive_clip(u_mass)
             total_term = 0.0
             for fold_idx in folds:
                 if self.num_folds <= 1:
@@ -741,8 +747,8 @@ class DOLCE:
                     bar_pi_0 = bar_pi_0_tensors[lag_idx][test_idx_t]
                     bar_pi_0 = torch.clamp(bar_pi_0, min=self.log_eps)
                     w = (bar_pi_theta / bar_pi_0).detach()
-                    if self.weight_clip is not None:
-                        w = torch.clamp(w, max=self.weight_clip)
+                    if clip_value is not None:
+                        w = torch.clamp(w, max=clip_value)
                     log_bar_pi = torch.log(bar_pi_theta + self.log_eps)
 
                     q_hat_test = q_hat_tensors[lag_idx][test_idx_t]

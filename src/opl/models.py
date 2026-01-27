@@ -823,7 +823,7 @@ class DOLCE:
             num_actions=self.num_actions,
         )
         bar_pi_0: Tensor = torch.clamp(bar_pi_0, min=self.log_eps)
-        w: Tensor = (bar_pi_theta.detach() / bar_pi_0)
+        w: Tensor = bar_pi_theta.detach() / bar_pi_0
         if self.weight_clip is not None:
             w = torch.clamp(w, max=self.weight_clip)
         w_factual: Tensor = w[idx, a_t]

@@ -17,7 +17,12 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from estimating import LaggedPolicyEstimatorTorch  # noqa: E402
-from estimating import RIAdditiveRewardConfig, estimate_alc_knn, train_predict_ri_additive_crossfit  # noqa: E402
+from estimating import (  # noqa: E402
+    RIAdditiveRewardConfig,
+    estimate_alc_knn,
+    fit_predict_by_MLP_actionwise_crossfit,
+    train_predict_ri_additive_crossfit,
+)
 from estimating.overlap_adaptive import adaptive_clip, unsupported_mass  # noqa: E402
 from synthetic import generate_synthetic_data  # noqa: E402
 from opl import RegressionBasedPolicyLearner, GradientBasedPolicyLearner, DOLCE  # noqa: E402
@@ -37,12 +42,12 @@ def _parse_ratio_list(raw: str) -> list[float]:
     return vals
 
 
-def _make_folds(num_data: int, num_folds: int, random_state: int) -> list[np.ndarray]:
-    if num_folds <= 1:
-        return [np.arange(num_data)]
-    rng = np.random.RandomState(random_state)
-    perm = rng.permutation(num_data)
-    return [np.sort(fold) for fold in np.array_split(perm, num_folds)]
+def _make_folds(n: int, n_folds: int, seed: int) -> list[np.ndarray]:
+    if n_folds <= 1:
+        return [np.arange(n)]
+    rng = np.random.RandomState(seed)
+    perm = rng.permutation(n)
+    return [np.sort(fold) for fold in np.array_split(perm, n_folds)]
 
 
 def _flatten_grads(model: torch.nn.Module) -> np.ndarray:
@@ -221,6 +226,15 @@ def _estimate_dolce_gradient(
     pi_all = model(x_t_tensor)
     log_prob_all = torch.log(pi_all + dolce.log_eps)
     current_policy = pi_all.detach()
+    clip_value = dolce.weight_clip
+    blend_weight = 1.0
+    pi_0 = logged_data.get("pi_0")
+    if pi_0 is not None:
+        u_mass = unsupported_mass(pi_all.detach().cpu().numpy(), pi_0, eps=dolce.log_eps)
+        if getattr(dolce, "blend_dolce", False):
+            blend_weight = min(1.0, u_mass / max(getattr(dolce, "blend_threshold", 0.0), dolce.log_eps))
+        if clip_value is None:
+            clip_value = adaptive_clip(u_mass)
 
     total = torch.zeros((), dtype=pi_all.dtype)
     n = x_t.shape[0]
@@ -255,16 +269,27 @@ def _estimate_dolce_gradient(
             bar_pi_theta = estimator.estimate_bar_pi(lag_tensor[test_idx_t], lag_tensor[train_idx_t], pi_train)
             bar_pi_0 = bar_pi_0_tensor[test_idx_t]
             w = (bar_pi_theta / bar_pi_0).detach()
-            clip_value = dolce.weight_clip
-            if clip_value is None and "pi_0" in logged_data:
-                u_mass = unsupported_mass(pi_all.detach().cpu().numpy(), logged_data["pi_0"], eps=dolce.log_eps)
-                clip_value = adaptive_clip(u_mass)
             if clip_value is not None:
                 w = torch.clamp(w, max=clip_value)
             log_bar_pi = torch.log(bar_pi_theta + dolce.log_eps)
             log_bar_pi_factual = log_bar_pi[torch.arange(test_idx_t.shape[0]), a_test]
 
-            term = term + w[torch.arange(test_idx_t.shape[0]), a_test] * (r_test - q_hat_factual) * log_bar_pi_factual
+            dolce_term = (
+                term + w[torch.arange(test_idx_t.shape[0]), a_test] * (r_test - q_hat_factual) * log_bar_pi_factual
+            )
+            term = dolce_term
+            if (blend_weight < 1.0) and (pi_0 is not None):
+                pi_0_test = torch.from_numpy(pi_0[fold_idx]).float().to(pi_test.device)
+                pi_0_test = torch.clamp(pi_0_test, min=dolce.log_eps)
+                iw = pi_test / pi_0_test
+                if clip_value is not None:
+                    iw = torch.clamp(iw, max=clip_value)
+                iw_factual = iw[torch.arange(test_idx_t.shape[0]), a_test]
+                dr_term = (
+                    iw_factual * (r_test - q_hat_factual) * log_prob_test[torch.arange(test_idx_t.shape[0]), a_test]
+                )
+                dr_term += torch.sum(q_hat_test * pi_test * log_prob_test, dim=1)
+                term = blend_weight * dolce_term + (1.0 - blend_weight) * dr_term
             lag_contrib[test_idx_t] = term
 
         total = total + float(lag_weights[lag_idx]) * lag_contrib.mean()

@@ -15,7 +15,7 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from synthetic import generate_synthetic_data, calc_true_value  # noqa: E402
-from estimating import fit_predict_by_MLP_actionwise  # noqa: E402
+from estimating import fit_predict_by_MLP_actionwise_crossfit  # noqa: E402
 from ope import calc_dm, calc_ips, calc_dr, calc_dolce  # noqa: E402
 from utils import eps_greedy_policy, parse_comma_separated_list  # noqa: E402
 
@@ -35,8 +35,14 @@ def main() -> None:
     parser.add_argument(
         "--x-dep",
         type=float,
-        default=0.0,
+        default=0.3,
         help="dependence strength of x_t on x_{t-l} (0 = independent)",
+    )
+    parser.add_argument(
+        "--lag-scale",
+        type=float,
+        default=2.0,
+        help="scale factor for lag reward component (h)",
     )
 
     parser.add_argument(
@@ -67,6 +73,7 @@ def main() -> None:
         random_state=args.test_seed,
         env_random_state=args.env_seed,
         x_t_dep=args.x_dep,
+        lag_scale=args.lag_scale,
     )
 
     summary_list = []
@@ -85,16 +92,18 @@ def main() -> None:
                 random_state=data_seed,
                 env_random_state=args.env_seed,
                 x_t_dep=args.x_dep,
+                lag_scale=args.lag_scale,
             )
 
             pi = eps_greedy_policy(logged_data["q"])
 
-            q_hat = fit_predict_by_MLP_actionwise(
+            q_hat = fit_predict_by_MLP_actionwise_crossfit(
                 features=logged_data["x_t"],
                 actions=logged_data["a_t"],
                 rewards=logged_data["r"],
                 num_actions=logged_data["num_actions"],
                 random_state=data_seed,
+                n_folds=2,
             )
 
             contributions = {
@@ -126,6 +135,7 @@ def main() -> None:
                         num_actions=args.num_actions,
                         lambda_=args.lambda_,
                         eta=args.eta,
+                        lag_scale=args.lag_scale,
                         env_seed=args.env_seed,
                     )
                 )
@@ -146,6 +156,7 @@ def main() -> None:
         summary["num_actions"] = args.num_actions
         summary["lambda_"] = args.lambda_
         summary["eta"] = args.eta
+        summary["lag_scale"] = args.lag_scale
         summary["env_seed"] = args.env_seed
         summary_list.append(summary)
 

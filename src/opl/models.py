@@ -14,7 +14,12 @@ from scipy.special import softmax
 from sklearn.utils import check_random_state
 
 from estimating.lag_policy import LaggedPolicyEstimatorTorch
-from estimating.reward import train_reward_model_mtri_crossfit, _make_folds
+from estimating.reward import (
+    RIAdditiveRewardConfig,
+    estimate_alc_knn,
+    train_predict_ri_additive_crossfit,
+    _make_folds,
+)
 
 
 @dataclass
@@ -272,7 +277,7 @@ class GradientBasedPolicyLearner:
         imit_reg (float, optional): imitation regularization. Defaults to 0.0.
         log_eps (float, optional): log epsilon. Defaults to 1e-10.
         bandwidth (float, optional): bandwidth. Defaults to 1.0.
-        weight_clip (float, optional): weight clip. Defaults to 100.0.
+        weight_clip (Optional[float], optional): weight clip. Defaults to None.
         solver (str, optional): solver. Defaults to "adagrad".
         max_iter (int, optional): maximum iterations. Defaults to 30.
         random_state (int, optional): random state. Defaults to 42.
@@ -289,7 +294,7 @@ class GradientBasedPolicyLearner:
     imit_reg: float = 0.0
     log_eps: float = 1e-10
     bandwidth: float = 1.0
-    weight_clip: float = 100.0
+    weight_clip: Optional[float] = None
     solver: str = "adagrad"
     max_iter: int = 30
     random_state: int = 42
@@ -546,6 +551,7 @@ class DOLCE:
         mtri_lr: float = 1e-3,
         mtri_weight_decay: float = 1e-4,
         tau: Optional[float] = None,
+        reward_cfg: Optional[RIAdditiveRewardConfig] = None,
     ) -> None:
         """Fit the DOLCE.
 
@@ -579,29 +585,33 @@ class DOLCE:
             lag_features_list: list[NDArray] = [lag_features[i] for i in range(lag_features.shape[0])]
 
         folds: list[NDArray] = _make_folds(
-            num_data=x_t.shape[0],
-            num_folds=self.num_folds,
-            random_state=self.random_state,
+            n=x_t.shape[0],
+            n_folds=self.num_folds,
+            seed=self.random_state,
         )
 
         if q_hat is None:
             q_hat_list: list[NDArray] = []
             alc_list: list[float] = []
             for lag_features in lag_features_list:
-                dataset_lag = dict(dataset)
-                dataset_lag["x_t_l"] = lag_features
-                q_hat_lag, alc_value, _ = train_reward_model_mtri_crossfit(
-                    dataset=dataset_lag,
-                    num_folds=self.num_folds,
-                    lambda_mtri=lambda_mtri,
-                    hidden_dim=mtri_hidden_dim,
-                    lr=mtri_lr,
-                    batch_size=mtri_batch_size,
-                    num_epochs=mtri_epochs,
-                    weight_decay=mtri_weight_decay,
-                    random_state=self.random_state,
+                if reward_cfg is None:
+                    cfg = RIAdditiveRewardConfig(n_folds=self.num_folds, seed=self.random_state)
+                else:
+                    cfg_dict = {**reward_cfg.__dict__}
+                    cfg_dict["n_folds"] = self.num_folds
+                    cfg_dict["seed"] = self.random_state
+                    cfg = RIAdditiveRewardConfig(**cfg_dict)
+                q_hat_lag, _ = train_predict_ri_additive_crossfit(
+                    x=x_t,
+                    x_lag=lag_features,
+                    a=a_t,
+                    r=r,
+                    num_actions=self.num_actions,
+                    cfg=cfg,
                     folds=folds,
                 )
+                q_hat_factual = q_hat_lag[np.arange(x_t.shape[0]), a_t]
+                alc_value = estimate_alc_knn(residual=r - q_hat_factual, x_lag=lag_features, a=a_t)
                 q_hat_list.append(q_hat_lag)
                 alc_list.append(alc_value)
         else:
@@ -641,11 +651,13 @@ class DOLCE:
         self.lag_weights_ = lag_weights
 
         estimator = LaggedPolicyEstimatorTorch(bandwidth=self.bandwidth, eps=self.log_eps)
+        pi_0 = dataset.get("pi_0")
         bar_pi_0_list: Deque[NDArray] = deque()
         for lag_features in lag_features_list:
             bar_pi_0_hat = np.zeros((x_t.shape[0], self.num_actions))
             lag_features_tensor = torch.from_numpy(lag_features).float()
             actions_tensor = torch.from_numpy(a_t).long()
+            pi_0_tensor = torch.from_numpy(pi_0).float() if pi_0 is not None else None
             for fold_idx in folds:
                 if self.num_folds <= 1:
                     train_idx = fold_idx
@@ -655,16 +667,27 @@ class DOLCE:
                     train_idx = np.where(mask)[0]
                 fold_idx_t = torch.from_numpy(fold_idx).long()
                 train_idx_t = torch.from_numpy(train_idx).long()
-                bar_pi_0_hat[fold_idx] = (
-                    estimator.estimate_bar_pi_from_actions(
-                        lag_features_tensor[fold_idx_t],
-                        lag_features_tensor[train_idx_t],
-                        actions_tensor[train_idx_t],
-                        self.num_actions,
+                if pi_0_tensor is not None:
+                    bar_pi_0_hat[fold_idx] = (
+                        estimator.estimate_bar_pi(
+                            lag_features_tensor[fold_idx_t],
+                            lag_features_tensor[train_idx_t],
+                            pi_0_tensor[train_idx_t],
+                        )
+                        .detach()
+                        .numpy()
                     )
-                    .detach()
-                    .numpy()
-                )
+                else:
+                    bar_pi_0_hat[fold_idx] = (
+                        estimator.estimate_bar_pi_from_actions(
+                            lag_features_tensor[fold_idx_t],
+                            lag_features_tensor[train_idx_t],
+                            actions_tensor[train_idx_t],
+                            self.num_actions,
+                        )
+                        .detach()
+                        .numpy()
+                    )
             bar_pi_0_hat = np.clip(bar_pi_0_hat, self.log_eps, None)
             bar_pi_0_hat = bar_pi_0_hat / bar_pi_0_hat.sum(axis=1, keepdims=True)
             bar_pi_0_list.append(bar_pi_0_hat)
@@ -717,7 +740,9 @@ class DOLCE:
                     )
                     bar_pi_0 = bar_pi_0_tensors[lag_idx][test_idx_t]
                     bar_pi_0 = torch.clamp(bar_pi_0, min=self.log_eps)
-                    w = torch.clamp((bar_pi_theta / bar_pi_0).detach(), max=self.weight_clip)
+                    w = (bar_pi_theta / bar_pi_0).detach()
+                    if self.weight_clip is not None:
+                        w = torch.clamp(w, max=self.weight_clip)
                     log_bar_pi = torch.log(bar_pi_theta + self.log_eps)
 
                     q_hat_test = q_hat_tensors[lag_idx][test_idx_t]
@@ -792,7 +817,9 @@ class DOLCE:
             num_actions=self.num_actions,
         )
         bar_pi_0: Tensor = torch.clamp(bar_pi_0, min=self.log_eps)
-        w: Tensor = torch.clamp(bar_pi_theta.detach() / bar_pi_0, max=self.weight_clip)
+        w: Tensor = (bar_pi_theta.detach() / bar_pi_0)
+        if self.weight_clip is not None:
+            w = torch.clamp(w, max=self.weight_clip)
         w_factual: Tensor = w[idx, a_t]
 
         log_bar_pi = torch.log(bar_pi_theta + self.log_eps)

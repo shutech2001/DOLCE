@@ -17,7 +17,7 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from estimating import LaggedPolicyEstimatorTorch  # noqa: E402
-from estimating import train_reward_model_mtri_crossfit  # noqa: E402
+from estimating import RIAdditiveRewardConfig, estimate_alc_knn, train_predict_ri_additive_crossfit  # noqa: E402
 from synthetic import generate_synthetic_data  # noqa: E402
 from opl import RegressionBasedPolicyLearner, GradientBasedPolicyLearner, DOLCE  # noqa: E402
 
@@ -149,15 +149,18 @@ def _estimate_dolce_gradient(
         q_hat_list = []
         alc_values = []
         for lag in lag_features_list:
-            dataset_lag = dict(logged_data)
-            dataset_lag["x_t_l"] = lag
-            q_hat_lag, alc_value, _ = train_reward_model_mtri_crossfit(
-                dataset=dataset_lag,
-                num_folds=dolce.num_folds,
-                lambda_mtri=lambda_mtri,
-                random_state=dolce.random_state,
+            cfg = RIAdditiveRewardConfig(n_folds=dolce.num_folds, seed=dolce.random_state)
+            q_hat_lag, _ = train_predict_ri_additive_crossfit(
+                x=logged_data["x_t"],
+                x_lag=lag,
+                a=logged_data["a_t"],
+                r=logged_data["r"],
+                num_actions=logged_data["num_actions"],
+                cfg=cfg,
                 folds=folds,
             )
+            q_hat_factual = q_hat_lag[np.arange(logged_data["x_t"].shape[0]), logged_data["a_t"]]
+            alc_value = estimate_alc_knn(residual=logged_data["r"] - q_hat_factual, x_lag=lag, a=logged_data["a_t"])
             q_hat_list.append(q_hat_lag)
             alc_values.append(alc_value)
 
@@ -167,6 +170,8 @@ def _estimate_dolce_gradient(
         estimator = LaggedPolicyEstimatorTorch(bandwidth=dolce.bandwidth, eps=dolce.log_eps)
         bar_pi_0_list = []
         actions_tensor = torch.from_numpy(a_t).long()
+        pi_0 = logged_data.get("pi_0")
+        pi_0_tensor = torch.from_numpy(pi_0).float() if pi_0 is not None else None
         for lag in lag_features_list:
             lag_tensor = torch.from_numpy(lag).float()
             bar_pi_0_hat = np.zeros((x_t.shape[0], num_actions))
@@ -179,16 +184,27 @@ def _estimate_dolce_gradient(
                     train_idx = np.where(mask)[0]
                 fold_idx_t = torch.from_numpy(fold_idx).long()
                 train_idx_t = torch.from_numpy(train_idx).long()
-                bar_pi_0_hat[fold_idx] = (
-                    estimator.estimate_bar_pi_from_actions(
-                        lag_tensor[fold_idx_t],
-                        lag_tensor[train_idx_t],
-                        actions_tensor[train_idx_t],
-                        num_actions,
+                if pi_0_tensor is not None:
+                    bar_pi_0_hat[fold_idx] = (
+                        estimator.estimate_bar_pi(
+                            lag_tensor[fold_idx_t],
+                            lag_tensor[train_idx_t],
+                            pi_0_tensor[train_idx_t],
+                        )
+                        .detach()
+                        .numpy()
                     )
-                    .detach()
-                    .numpy()
-                )
+                else:
+                    bar_pi_0_hat[fold_idx] = (
+                        estimator.estimate_bar_pi_from_actions(
+                            lag_tensor[fold_idx_t],
+                            lag_tensor[train_idx_t],
+                            actions_tensor[train_idx_t],
+                            num_actions,
+                        )
+                        .detach()
+                        .numpy()
+                    )
             bar_pi_0_hat = np.clip(bar_pi_0_hat, dolce.log_eps, None)
             bar_pi_0_hat = bar_pi_0_hat / bar_pi_0_hat.sum(axis=1, keepdims=True)
             bar_pi_0_list.append(bar_pi_0_hat)
@@ -237,7 +253,9 @@ def _estimate_dolce_gradient(
 
             bar_pi_theta = estimator.estimate_bar_pi(lag_tensor[test_idx_t], lag_tensor[train_idx_t], pi_train)
             bar_pi_0 = bar_pi_0_tensor[test_idx_t]
-            w = torch.clamp((bar_pi_theta / bar_pi_0).detach(), max=dolce.weight_clip)
+            w = (bar_pi_theta / bar_pi_0).detach()
+            if dolce.weight_clip is not None:
+                w = torch.clamp(w, max=dolce.weight_clip)
             log_bar_pi = torch.log(bar_pi_theta + dolce.log_eps)
             log_bar_pi_factual = log_bar_pi[torch.arange(test_idx_t.shape[0]), a_test]
 
@@ -267,8 +285,14 @@ def main() -> None:
     parser.add_argument(
         "--x-dep",
         type=float,
-        default=0.0,
+        default=1.0,
         help="dependence strength of x_t on x_{t-l} (0 = independent)",
+    )
+    parser.add_argument(
+        "--lag-scale",
+        type=float,
+        default=2.0,
+        help="scale factor for lag reward component (h)",
     )
 
     parser.add_argument(
@@ -316,6 +340,7 @@ def main() -> None:
             env_random_state=args.env_seed,
             logging_eps=args.logging_eps,
             x_t_dep=args.x_dep,
+            lag_scale=args.lag_scale,
         )
         v_pi_0 = float((test_data["q"] * test_data["pi_0"]).sum(1).mean())
         v_star = float(test_data["q"].max(axis=1).mean())
@@ -334,6 +359,7 @@ def main() -> None:
                 env_random_state=args.env_seed,
                 logging_eps=args.logging_eps,
                 x_t_dep=args.x_dep,
+                lag_scale=args.lag_scale,
             )
 
             # DM (regression-based)
@@ -455,6 +481,7 @@ def main() -> None:
                         eta=args.eta,
                         env_seed=args.env_seed,
                         logging_eps=args.logging_eps,
+                        lag_scale=args.lag_scale,
                     )
                 )
 
@@ -476,6 +503,7 @@ def main() -> None:
         eta=("eta", "first"),
         env_seed=("env_seed", "first"),
         logging_eps=("logging_eps", "first"),
+        lag_scale=("lag_scale", "first"),
     ).reset_index()
 
     output_path = Path(args.output)

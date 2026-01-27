@@ -16,7 +16,7 @@ def generate_synthetic_data(
     eta: float = 0.0,
     beta: float = 0.3,
     random_state: int = 42,
-    env_random_state: int = 0,  # ★追加：環境固定用
+    env_random_state: int = 0,
     logging_eps: float = 0.0,
     x_t_dep: float = 1.0,
     lag_scale: float = 1.0,

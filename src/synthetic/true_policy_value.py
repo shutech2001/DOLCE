@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Dict
-
 from numpy.typing import NDArray
 
 from .generate import generate_synthetic_data
@@ -14,33 +13,31 @@ def calc_true_value(
     non_overlap_ratio: float,
     lambda_: float,
     eta: float = 0.0,
-    *,
-    env_random_state: int | None = None,
-    data_random_state: int | None = None,
-    eps: float = 0.1,
+    beta: float = 0.3,
+    random_state: int = 42,
+    env_random_state: int = 0,
+    num_mc: int = 100000,
+    logging_eps: float = 0.0,
+    x_t_dep: float = 1.0,
 ) -> float:
-    """Calculate the true value of the policy value using synthetic data
+    """Calculate the true value of the epsilon-greedy policy (Monte Carlo).
 
-    Args:
-        num_features (int): number of features
-        num_actions (int): number of actions
-        non_overlap_ratio (float): non-overlap ratio
-        lambda_ (float): lambda
-        eta (float, optional): eta. Defaults to 0.0.
-
-    Returns:
-        float: true value of the policy value
+    The true value is independent of non_overlap_ratio, since overlap affects only logging.
+    We keep the argument for API compatibility with existing simulation scripts.
     """
-    test_data: Dict = generate_synthetic_data(
-        num_data=1000000,
+    test_data = generate_synthetic_data(
+        num_data=num_mc,
         num_features=num_features,
         num_actions=num_actions,
-        non_overlap_ratio=non_overlap_ratio,
+        non_overlap_ratio=0.0,
         lambda_=lambda_,
         eta=eta,
+        beta=beta,
+        random_state=random_state,
         env_random_state=env_random_state,
-        data_random_state=data_random_state,
+        logging_eps=logging_eps,
+        x_t_dep=x_t_dep,
     )
-    q: NDArray = test_data["q"]
-    pi: NDArray = eps_greedy_policy(q, eps=eps)
-    return (q * pi).sum(1).mean()
+    q = test_data["q"]
+    pi = eps_greedy_policy(q)
+    return float((q * pi).sum(1).mean())

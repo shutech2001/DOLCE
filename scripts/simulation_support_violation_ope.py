@@ -95,7 +95,9 @@ def main() -> None:
                 lag_scale=args.lag_scale,
             )
 
-            pi = eps_greedy_policy(logged_data["q"])
+            # Target policy uses only current context (theory assumption).
+            q_for_pi = logged_data.get("g_x_t_a_t", logged_data["q"])
+            pi = eps_greedy_policy(q_for_pi)
 
             q_hat = fit_predict_by_MLP_actionwise_crossfit(
                 features=logged_data["x_t"],

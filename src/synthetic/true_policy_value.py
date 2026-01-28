@@ -41,5 +41,8 @@ def calc_true_value(
         lag_scale=lag_scale,
     )
     q = test_data["q"]
-    pi = eps_greedy_policy(q)
+    # Target policy uses only current-context component when available.
+    q_for_pi = test_data.get("g_x_t_a_t", q)
+    pi = eps_greedy_policy(q_for_pi)
+    # Value is always with respect to the true reward q.
     return float((q * pi).sum(1).mean())

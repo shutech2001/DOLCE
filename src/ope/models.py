@@ -192,6 +192,7 @@ def calc_dolce(
                 r=rewards,
                 num_actions=dataset["num_actions"],
                 cfg=cfg,
+                folds=folds,
             )
             q_hat_fact = q_hat[np.arange(num_data), actions]
             alc = estimate_alc_knn(residual=rewards - q_hat_fact, x_lag=lag, a=actions)

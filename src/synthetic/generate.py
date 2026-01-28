@@ -42,6 +42,9 @@ def generate_synthetic_data(
     x_t_l: NDArray = rng_data.normal(size=(num_data, num_features))
     # features at time t based on features at time t-l (x_t_dep=0 -> independent)
     x_t: NDArray = rng_data.normal(loc=x_t_dep * x_t_l, scale=3, size=(num_data, num_features))
+    # Make the first feature independent of x_{t-l} so support violation can
+    # depend on X_t alone without inducing lag-support violations.
+    x_t[:, 0] = rng_data.normal(scale=3, size=num_data)
 
     # define reward function (q = lambda_*g(x_t,a) + (1-lambda_)*h(x_t_l,a) + eta*u(x_t,x_t_l,a))
     g_x_t_a_t = np.zeros((num_data, num_actions))
@@ -107,7 +110,8 @@ def generate_synthetic_data(
         pi_0 = (1.0 - logging_eps) * pi_0 + logging_eps / num_actions
     a_t = sample_action(pi_0, random_state * 2)  # data randomness
 
-    # support violation (deterministic no-intervention for high x_t[:,0])
+    # support violation (deterministic no-intervention)
+    # Use X_t[:,0] only (current-action sufficiency), and keep it independent of X_{t-l}.
     percentile = np.percentile(x_t[:, 0], (1 - non_overlap_ratio) * 100)
     idx = x_t[:, 0] > percentile
     a_t[idx] = 0

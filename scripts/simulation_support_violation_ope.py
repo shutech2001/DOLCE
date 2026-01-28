@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.stats import t as student_t
 from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -108,20 +109,36 @@ def main() -> None:
                 n_folds=2,
             )
 
+            dolce_contrib, dolce_info = calc_dolce(logged_data, pi, random_state=data_seed)
             contributions = {
                 "DM": calc_dm(logged_data, pi, q_hat=q_hat)[0],
                 "IPS": calc_ips(logged_data, pi)[0],
                 "DR": calc_dr(logged_data, pi, q_hat=q_hat)[0],
-                "DOLCE": calc_dolce(logged_data, pi, random_state=data_seed)[0],
+                "DOLCE": dolce_contrib,
             }
 
             for method, contrib in contributions.items():
                 estimate = float(np.mean(contrib))
                 # influence-function-based SE (same as std(contrib)/sqrt(n), but explicit)
-                phi = contrib - estimate
-                se = float(np.sqrt(np.mean(phi**2) / contrib.shape[0]))
-                ci_low = estimate - 1.96 * se
-                ci_high = estimate + 1.96 * se
+                if method == "DOLCE" and isinstance(dolce_info, dict):
+                    fold_means = dolce_info.get("fold_means")
+                    fold_sizes = dolce_info.get("fold_sizes")
+                    if fold_means is not None and len(fold_means) > 1:
+                        fold_var = float(np.var(fold_means, ddof=1))
+                        se = float(np.sqrt(fold_var / len(fold_means)))
+                        t_alpha = float(student_t.ppf(0.975, df=len(fold_means) - 1))
+                        ci_low = estimate - t_alpha * se
+                        ci_high = estimate + t_alpha * se
+                    else:
+                        phi = contrib - estimate
+                        se = float(np.sqrt(np.mean(phi**2) / contrib.shape[0]))
+                        ci_low = estimate - 1.96 * se
+                        ci_high = estimate + 1.96 * se
+                else:
+                    phi = contrib - estimate
+                    se = float(np.sqrt(np.mean(phi**2) / contrib.shape[0]))
+                    ci_low = estimate - 1.96 * se
+                    ci_high = estimate + 1.96 * se
                 raw_rows.append(
                     dict(
                         support_violation_ratio=int(value * 100),

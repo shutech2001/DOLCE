@@ -277,11 +277,24 @@ def calc_dolce(
     for weight, lag_contrib in zip(weights, lag_contributions):
         contributions += weight * lag_contrib
 
+    fold_means = []
+    fold_sizes = []
+    for fold_idx in folds:
+        if fold_idx.size == 0:
+            continue
+        fold_sizes.append(int(fold_idx.size))
+        fold_value = 0.0
+        for weight, lag_contrib in zip(weights, lag_contributions):
+            fold_value += weight * float(np.mean(lag_contrib[fold_idx]))
+        fold_means.append(fold_value)
+
     info = {
         "alc_values": alc_arr,
         "lag_weights": weights,
         "lag_weight_min": float(np.min(weights)),
         "lag_weight_max": float(np.max(weights)),
         "reward_model": reward_model,
+        "fold_means": np.array(fold_means, dtype=np.float64),
+        "fold_sizes": np.array(fold_sizes, dtype=np.int64),
     }
     return contributions, info

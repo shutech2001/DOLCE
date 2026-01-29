@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 from numpy.typing import NDArray
 
-from estimating.lag_policy import LaggedPolicyEstimator
+from estimating.lag_policy import LaggedPolicyEstimator, _make_folds
 from estimating.reward import (
     RIAdditiveRewardConfig,
     estimate_alc_knn,
@@ -16,14 +16,6 @@ from estimating.reward import (
 )
 
 
-def _make_folds(n: int, n_folds: int, seed: int) -> List[NDArray[np.int64]]:
-    if n_folds <= 1:
-        return [np.arange(n, dtype=np.int64)]
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(n)
-    return [np.sort(block).astype(np.int64) for block in np.array_split(perm, n_folds)]
-
-
 def _get_q_hat(
     dataset: dict,
     reward_model: str,
@@ -31,6 +23,18 @@ def _get_q_hat(
     reward_cfg: Optional[RIAdditiveRewardConfig],
     random_state: int,
 ) -> Tuple[NDArray, Dict]:
+    """Get the estimated reward function.
+
+    Args:
+        dataset (dict): The dataset.
+        reward_model (str): The reward model.
+        q_hat (Optional[NDArray]): The estimated reward function.
+        reward_cfg (Optional[RIAdditiveRewardConfig]): The reward configuration.
+        random_state (int): The random state.
+
+    Returns:
+        Tuple[NDArray, Dict]: The estimated reward function and the information.
+    """
     if q_hat is not None:
         return q_hat, {"reward_model": "provided"}
 
@@ -87,7 +91,19 @@ def calc_dm(
     reward_cfg: Optional[RIAdditiveRewardConfig] = None,
     random_state: int = 42,
 ) -> Tuple[NDArray, Dict]:
-    """Direct Method (DM)."""
+    """Direct Method (DM).
+
+    Args:
+        dataset (dict): The dataset.
+        pi (NDArray): The policy.
+        q_hat (Optional[NDArray]): The estimated reward function.
+        reward_model (str): The reward model.
+        reward_cfg (Optional[RIAdditiveRewardConfig]): The reward configuration.
+        random_state (int): The random state.
+
+    Returns:
+        Tuple[NDArray, Dict]: The contribution and the information.
+    """
     q_hat, info_q = _get_q_hat(dataset, reward_model, q_hat, reward_cfg, random_state)
     contrib = (pi * q_hat).sum(axis=1)
 
@@ -100,7 +116,15 @@ def calc_dm(
 
 
 def calc_ips(dataset: dict, pi: NDArray) -> Tuple[NDArray, Dict]:
-    """Inverse Propensity Scoring (IPS)."""
+    """Inverse Propensity Scoring (IPS).
+
+    Args:
+        dataset (dict): The dataset.
+        pi (NDArray): The policy.
+
+    Returns:
+        Tuple[NDArray, Dict]: The contribution and the information.
+    """
     a = dataset["a_t"]
     r = dataset["r"]
     pi0 = dataset["pi_0"]
@@ -118,7 +142,19 @@ def calc_dr(
     reward_cfg: Optional[RIAdditiveRewardConfig] = None,
     random_state: int = 42,
 ) -> Tuple[NDArray, Dict]:
-    """Doubly Robust (DR)."""
+    """Doubly Robust (DR).
+
+    Args:
+        dataset (dict): The dataset.
+        pi (NDArray): The policy.
+        q_hat (Optional[NDArray]): The estimated reward function.
+        reward_model (str): The reward model.
+        reward_cfg (Optional[RIAdditiveRewardConfig]): The reward configuration.
+        random_state (int): The random state.
+
+    Returns:
+        Tuple[NDArray, Dict]: The contribution and the information.
+    """
     q_hat, info_q = _get_q_hat(dataset, reward_model, q_hat, reward_cfg, random_state)
 
     a = dataset["a_t"]
@@ -156,7 +192,24 @@ def calc_dolce(
     reward_model: str = "ri_additive",
     reward_cfg: Optional[RIAdditiveRewardConfig] = None,
 ) -> Tuple[NDArray, Dict]:
-    """DOLCE (single-lag) with kernel lag policies and residual-invariance reward model."""
+    """DOLCE (single-lag) with kernel lag policies and residual-invariance reward model.
+
+    Args:
+        dataset (dict): The dataset.
+        pi (NDArray): The policy.
+        num_folds (int): The number of folds.
+        tau (float): The tau.
+        bandwidth (float): The bandwidth.
+        lambda_mtri (float): The lambda for the MTRI reward model.
+        weight_clip (Optional[float]): The weight clip.
+        random_state (int): The random state.
+        eps (float): The epsilon.
+        reward_model (str): The reward model.
+        reward_cfg (Optional[RIAdditiveRewardConfig]): The reward configuration.
+
+    Returns:
+        Tuple[NDArray, Dict]: The contribution and the information.
+    """
     num_data = dataset["num_data"]
     actions = dataset["a_t"]
     rewards = dataset["r"]

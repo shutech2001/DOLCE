@@ -55,7 +55,7 @@ class MLPScalar(nn.Module):
             dropout (float, optional): The dropout rate. Defaults to 0.0.
         """
         super().__init__()
-        layers = []
+        layers: List[nn.Module] = []
         prev = in_dim
         for h in hidden_sizes:
             layers.append(nn.Linear(prev, h))

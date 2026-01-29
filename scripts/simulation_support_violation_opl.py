@@ -1,45 +1,38 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import pickle
 import os
 import sys
 import warnings
 from pathlib import Path
 
+import matplotlib as mpl
+import matplotlib.font_manager as fm
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.utils import check_random_state
-from tqdm import tqdm
+from sklearn.utils import check_random_state  # type: ignore
+from tqdm import tqdm  # type: ignore
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from estimating import LaggedPolicyEstimatorTorch  # noqa: E402
 from estimating import (  # noqa: E402
+    adaptive_clip,
+    LaggedPolicyEstimatorTorch,
     RIAdditiveRewardConfig,
     estimate_alc_knn,
-    fit_predict_by_MLP_actionwise_crossfit,
     train_predict_ri_additive_crossfit,
+    unsupported_mass,
 )
-from estimating.overlap_adaptive import adaptive_clip, unsupported_mass  # noqa: E402
 from synthetic import generate_synthetic_data  # noqa: E402
 from opl import RegressionBasedPolicyLearner, GradientBasedPolicyLearner, DOLCE  # noqa: E402
+from utils import parse_comma_separated_list  # noqa: E402
 
 warnings.filterwarnings("ignore")
-
-
-def _parse_ratio_list(raw: str) -> list[float]:
-    vals = []
-    for p in raw.split(","):
-        p = p.strip()
-        if not p:
-            continue
-        vals.append(float(p) / 100.0)
-    if not vals:
-        raise ValueError("ratios are empty")
-    return vals
 
 
 def _make_folds(n: int, n_folds: int, seed: int) -> list[np.ndarray]:
@@ -68,6 +61,34 @@ def _estimate_true_gradient(model: torch.nn.Module, x_t: np.ndarray, q: np.ndarr
     value = (pi * q_tensor).sum(1).mean()
     value.backward()
     return _flatten_grads(model)
+
+
+def _init_policy_model(
+    num_features: int,
+    num_actions: int,
+    hidden_layer_size: tuple,
+    activation: str,
+    seed: int,
+) -> torch.nn.Module:
+    torch.manual_seed(seed)
+    base = GradientBasedPolicyLearner(
+        num_features=num_features,
+        num_actions=num_actions,
+        hidden_layer_size=hidden_layer_size,
+        activation=activation,
+        max_iter=0,
+        random_state=seed,
+    )
+    return copy.deepcopy(base.nn_model)
+
+
+def _apply_flat_grad(model: torch.nn.Module, flat_grad: np.ndarray, step_size: float) -> None:
+    offset = 0
+    for param in model.parameters():
+        numel = param.numel()
+        grad_slice = flat_grad[offset : offset + numel].reshape(param.shape)  # noqa: E203
+        param.data.add_(torch.from_numpy(grad_slice).to(param.data) * step_size)
+        offset += numel
 
 
 def _estimate_ips_gradient(
@@ -300,13 +321,13 @@ def _estimate_dolce_gradient(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="OPL simulation for support violation ratios.")
-    parser.add_argument("--num-sim", type=int, default=30)
+    parser.add_argument("--num-sim", type=int, default=50)
     parser.add_argument("--num-data", type=int, default=1000)
     parser.add_argument("--num-features", type=int, default=5)
     parser.add_argument("--num-actions", type=int, default=5)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.5)
     parser.add_argument("--eta", type=float, default=0.0)
-    parser.add_argument("--num-epochs", type=int, default=20)
+    parser.add_argument("--num-epochs", type=int, default=30)
     parser.add_argument("--test-data-size", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42, help="data seed base (contexts + reward noise)")
     parser.add_argument("--env-seed", type=int, default=7, help="environment seed (reward function)")
@@ -324,28 +345,27 @@ def main() -> None:
         default=2.0,
         help="scale factor for lag reward component (h)",
     )
-
     parser.add_argument(
-        "--ratios",
+        "--values",
         type=str,
-        default="0,30,60,90",
-        help="comma-separated percent values",
+        default="0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9",
+        help="comma-separated values",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="result_df_support_violation_opl.pkl",
+        default="results/result_df_support_violation_opl.pkl",
     )
     parser.add_argument(
         "--output-raw",
         type=str,
-        default="",
+        default="results/result_df_support_violation_opl_raw.pkl",
         help="optional path for raw per-simulation results",
     )
     parser.add_argument(
         "--plot-dir",
         type=str,
-        default="",
+        default="results/plots",
         help="optional directory to save plots",
     )
     parser.add_argument("--show-summary", action="store_true")
@@ -354,11 +374,11 @@ def main() -> None:
     torch.manual_seed(args.seed)
     _ = check_random_state(args.seed)
 
-    ratio_list = _parse_ratio_list(args.ratios)
+    value_list = parse_comma_separated_list(args.values)
     raw_rows = []
 
     # Use the same test contexts across ratios and sims; only pi_0 changes with ratio.
-    for non_overlap_ratio in ratio_list:
+    for non_overlap_ratio in value_list:
         test_data = generate_synthetic_data(
             num_data=args.test_data_size,
             num_features=args.num_features,
@@ -458,20 +478,25 @@ def main() -> None:
             r_logged = logged_data["r"]
             pi_0_logged = logged_data["pi_0"]
 
-            grad_true_ips = _estimate_true_gradient(ips.nn_model, x_test, q_test)
+            # Evaluate gradient estimators on a fixed target policy (DOLCE's),
+            # so differences reflect estimator bias under support violation rather than
+            # policy adaptation across methods.
+            grad_model = dolce.nn_model
+            grad_true = _estimate_true_gradient(grad_model, x_test, q_test)
+
             grad_hat_ips = _estimate_ips_gradient(
-                ips.nn_model,
+                grad_model,
                 x_logged,
                 a_logged,
                 r_logged,
                 pi_0_logged,
                 ips.log_eps,
             )
-            grad_mse_ips = float(np.mean((grad_hat_ips - grad_true_ips) ** 2))
+            grad_err_ips = grad_hat_ips - grad_true
+            grad_mse_ips = float(np.mean(grad_err_ips**2))
 
-            grad_true_dr = _estimate_true_gradient(dr.nn_model, x_test, q_test)
             grad_hat_dr = _estimate_dr_gradient(
-                dr.nn_model,
+                grad_model,
                 x_logged,
                 a_logged,
                 r_logged,
@@ -479,16 +504,82 @@ def main() -> None:
                 q_hat,
                 dr.log_eps,
             )
-            grad_mse_dr = float(np.mean((grad_hat_dr - grad_true_dr) ** 2))
+            grad_err_dr = grad_hat_dr - grad_true
+            grad_mse_dr = float(np.mean(grad_err_dr**2))
 
-            grad_true_dolce = _estimate_true_gradient(dolce.nn_model, x_test, q_test)
             grad_hat_dolce = _estimate_dolce_gradient(dolce, logged_data)
-            grad_mse_dolce = float(np.mean((grad_hat_dolce - grad_true_dolce) ** 2))
+            grad_err_dolce = grad_hat_dolce - grad_true
+            grad_mse_dolce = float(np.mean(grad_err_dolce**2))
+
+            grad_true_norm = float(np.linalg.norm(grad_true))
+            grad_rel_ips = float(np.linalg.norm(grad_err_ips) / (grad_true_norm + 1e-12))
+            grad_rel_dr = float(np.linalg.norm(grad_err_dr) / (grad_true_norm + 1e-12))
+            grad_rel_dolce = float(np.linalg.norm(grad_err_dolce) / (grad_true_norm + 1e-12))
+
+            def _cos_sim(u: np.ndarray, v: np.ndarray) -> float:
+                denom = (np.linalg.norm(u) * np.linalg.norm(v)) + 1e-12
+                return float(np.dot(u, v) / denom)
+
+            grad_cos_ips = _cos_sim(grad_hat_ips, grad_true)
+            grad_cos_dr = _cos_sim(grad_hat_dr, grad_true)
+            grad_cos_dolce = _cos_sim(grad_hat_dolce, grad_true)
+
+            # One-step improvement from a common initialization (diagnostic for gradient quality)
+            base_model = _init_policy_model(
+                num_features=args.num_features,
+                num_actions=args.num_actions,
+                hidden_layer_size=dolce.hidden_layer_size,
+                activation=dolce.activation,
+                seed=data_seed,
+            )
+            base_model.eval()
+            with torch.no_grad():
+                base_pi = base_model(torch.from_numpy(x_test).float()).numpy()
+            base_value = float((q_test * base_pi).sum(1).mean())
+
+            step_size = dolce.learning_rate_init
+
+            ips_model = copy.deepcopy(base_model)
+            _apply_flat_grad(ips_model, grad_hat_ips, step_size)
+            with torch.no_grad():
+                pi_step = ips_model(torch.from_numpy(x_test).float()).numpy()
+            value_step_ips = float((q_test * pi_step).sum(1).mean())
+
+            dr_model = copy.deepcopy(base_model)
+            _apply_flat_grad(dr_model, grad_hat_dr, step_size)
+            with torch.no_grad():
+                pi_step = dr_model(torch.from_numpy(x_test).float()).numpy()
+            value_step_dr = float((q_test * pi_step).sum(1).mean())
+
+            dolce_model = copy.deepcopy(base_model)
+            _apply_flat_grad(dolce_model, grad_hat_dolce, step_size)
+            with torch.no_grad():
+                pi_step = dolce_model(torch.from_numpy(x_test).float()).numpy()
+            value_step_dolce = float((q_test * pi_step).sum(1).mean())
+
+            one_step_map = {
+                "IPS": value_step_ips - base_value,
+                "DR": value_step_dr - base_value,
+                "DOLCE": value_step_dolce - base_value,
+                "DM": np.nan,
+            }
 
             grad_mse_map = {
                 "IPS": grad_mse_ips,
                 "DR": grad_mse_dr,
                 "DOLCE": grad_mse_dolce,
+                "DM": np.nan,
+            }
+            grad_rel_map = {
+                "IPS": grad_rel_ips,
+                "DR": grad_rel_dr,
+                "DOLCE": grad_rel_dolce,
+                "DM": np.nan,
+            }
+            grad_cos_map = {
+                "IPS": grad_cos_ips,
+                "DR": grad_cos_dr,
+                "DOLCE": grad_cos_dolce,
                 "DM": np.nan,
             }
 
@@ -503,6 +594,9 @@ def main() -> None:
                         regret=v_star - value,
                         win_rate=value > v_pi_0,
                         grad_mse=grad_mse_map[method],
+                        grad_rel=grad_rel_map[method],
+                        grad_cos=grad_cos_map[method],
+                        one_step_improve=one_step_map[method],
                         v_star=v_star,
                         v_pi_0=v_pi_0,
                         num_data=args.num_data,
@@ -525,6 +619,9 @@ def main() -> None:
         win_rate=("win_rate", "mean"),
         value_mean=("value", "mean"),
         grad_mse_mean=("grad_mse", "mean"),
+        grad_rel_mean=("grad_rel", "mean"),
+        grad_cos_mean=("grad_cos", "mean"),
+        one_step_improve_mean=("one_step_improve", "mean"),
         v_star=("v_star", "first"),
         v_pi_0=("v_pi_0", "first"),
         num_data=("num_data", "first"),
@@ -546,45 +643,141 @@ def main() -> None:
             pickle.dump(raw_df, f)
 
     if args.plot_dir:
-        plot_dir = Path(args.plot_dir)
-        plot_dir.mkdir(parents=True, exist_ok=True)
+        preferred_font = "Times New Roman"
+        available_fonts = {f.name for f in fm.fontManager.ttflist}
 
-        fig, ax = plt.subplots()
-        for method in summary_df["method"].unique():
-            method_df = summary_df[summary_df["method"] == method].sort_values("support_violation_ratio")
-            ax.plot(method_df["support_violation_ratio"], method_df["ni_median"], marker="o", label=method)
-            ax.fill_between(method_df["support_violation_ratio"], method_df["ni_q1"], method_df["ni_q3"], alpha=0.2)
-        ax.set_xlabel("support violation ratio (%)")
-        ax.set_ylabel("Normalized Improvement (median)")
-        ax.set_title("OPL: NI vs support violation")
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(plot_dir / "opl_ni.png", dpi=150)
-        plt.close(fig)
+        serif_list = (
+            [preferred_font] if preferred_font in available_fonts else [preferred_font, "Nimbus Roman", "DejaVu Serif"]
+        )
 
-        fig, ax = plt.subplots()
-        for method in summary_df["method"].unique():
-            method_df = summary_df[summary_df["method"] == method].sort_values("support_violation_ratio")
-            ax.plot(method_df["support_violation_ratio"], method_df["regret_mean"], marker="o", label=method)
-        ax.set_xlabel("support violation ratio (%)")
-        ax.set_ylabel("Regret (mean)")
-        ax.set_title("OPL: regret vs support violation")
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(plot_dir / "opl_regret.png", dpi=150)
-        plt.close(fig)
+        mpl.rcParams.update(
+            {
+                "font.family": "serif",
+                "font.serif": serif_list,
+                "mathtext.fontset": "stix",
+                "pdf.fonttype": 42,
+                "ps.fonttype": 42,
+                "axes.unicode_minus": False,
+                "font.size": 11,
+                "axes.labelsize": 11,
+                "axes.titlesize": 11,
+                "legend.fontsize": 10,
+                "xtick.labelsize": 10,
+                "ytick.labelsize": 10,
+                "axes.linewidth": 0.8,
+            }
+        )
 
-        fig, ax = plt.subplots()
-        for method in summary_df["method"].unique():
-            method_df = summary_df[summary_df["method"] == method].sort_values("support_violation_ratio")
-            ax.plot(method_df["support_violation_ratio"], method_df["grad_mse_mean"], marker="o", label=method)
-        ax.set_xlabel("support violation ratio (%)")
-        ax.set_ylabel("Gradient MSE (mean)")
-        ax.set_title("OPL: gradient MSE vs support violation")
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(plot_dir / "opl_grad_mse.png", dpi=150)
-        plt.close(fig)
+        order = ["DM", "IPS", "DR", "DOLCE"]
+        display_name = {"DM": "Regression-based", "IPS": "IPS", "DR": "DR", "DOLCE": "DOLCE"}
+        linestyles = {"DM": "-", "IPS": "--", "DR": ":", "DOLCE": "-."}
+        markers = {"DM": "o", "IPS": "^", "DR": "s", "DOLCE": "D"}
+        colors = {"DM": "blue", "IPS": "red", "DR": "purple", "DOLCE": "green"}
+
+        # aggregate to avoid duplicate values
+        plot_df = summary_df.groupby(["method", "support_violation_ratio"], as_index=False).agg(
+            {
+                "ni_median": "mean",
+                "one_step_improve_mean": "mean",
+                "regret_mean": "mean",
+            }
+        )
+
+        plot_df["support_violation_ratio"] = pd.to_numeric(plot_df["support_violation_ratio"])
+        plot_df = plot_df.sort_values(["method", "support_violation_ratio"])
+
+        # Figure (1x3): (a)=NI, (b)=One-step, (c)=Regret
+        fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.0), sharex=True)
+        ax_ni, ax_os, ax_reg = axes
+
+        # (a) normalized improvement & (c) regret: plot all methods
+        for m in order:
+            sub = plot_df[plot_df["method"] == m].sort_values("support_violation_ratio")
+            x = sub["support_violation_ratio"].to_numpy()
+
+            ax_ni.plot(
+                x,
+                sub["ni_median"].to_numpy(),
+                linestyle=linestyles[m],
+                marker=markers[m],
+                color=colors[m],
+                linewidth=1.8,
+                markersize=5,
+            )
+            ax_reg.plot(
+                x,
+                sub["regret_mean"].to_numpy(),
+                linestyle=linestyles[m],
+                marker=markers[m],
+                color=colors[m],
+                linewidth=1.8,
+                markersize=5,
+            )
+
+        # (b) one-step improvement: do not plot Regression-based(DM)
+        for m in ["IPS", "DR", "DOLCE"]:
+            sub = plot_df[plot_df["method"] == m].sort_values("support_violation_ratio")
+            x = sub["support_violation_ratio"].to_numpy()
+
+            ax_os.plot(
+                x,
+                sub["one_step_improve_mean"].to_numpy(),
+                linestyle=linestyles[m],
+                marker=markers[m],
+                color=colors[m],
+                linewidth=1.8,
+                markersize=5,
+            )
+
+        # axis labels and style
+        xticks = sorted(plot_df["support_violation_ratio"].unique())
+        for ax in axes:
+            ax.set_xlabel("support violation ratio")
+            ax.set_xticks(xticks)
+            ax.tick_params(direction="in", length=4, width=0.8)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.margins(x=0.02)
+
+        ax_ni.set_ylabel("normalized improvement")
+        ax_os.set_ylabel("one-step improvement")
+        ax_reg.set_ylabel("regret")
+
+        ax_ni.set_title("(a)")
+        ax_os.set_title("(b)")
+        ax_reg.set_title("(c)")
+
+        # one-step is 1e-4 order, so use scientific notation for paper
+        ax_os.ticklabel_format(axis="y", style="sci", scilimits=(-3, 3), useMathText=True)
+
+        # legend: line style + marker, outside of figure (top), fixed order
+        handles = [
+            Line2D(
+                [0],
+                [0],
+                label=display_name[m],
+                linestyle=linestyles[m],
+                marker=markers[m],
+                color=colors[m],
+                linewidth=1.8,
+                markersize=6,
+            )
+            for m in order
+        ]
+        fig.legend(
+            handles=handles,
+            labels=[display_name[m] for m in order],
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=4,
+            frameon=False,
+            handlelength=2.2,
+            columnspacing=1.4,
+            handletextpad=0.5,
+        )
+
+        fig.tight_layout(rect=[0, 0, 1, 0.90])
+        fig.savefig(args.plot_dir + "/opl_support_violation.pdf", bbox_inches="tight")
 
     if args.show_summary:
         print(summary_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))

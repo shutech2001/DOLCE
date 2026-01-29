@@ -10,13 +10,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from scipy.spatial import cKDTree
-from sklearn.dummy import DummyRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from scipy.spatial import cKDTree  # type: ignore
+from sklearn.dummy import DummyRegressor  # type: ignore
+from sklearn.neural_network import MLPRegressor  # type: ignore
+from sklearn.preprocessing import StandardScaler  # type: ignore
 
 
 def _set_torch_seed(seed: int) -> None:
+    """Set the seed for torch.
+
+    Args:
+        seed (int): The seed to set.
+    """
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
@@ -24,6 +29,15 @@ def _set_torch_seed(seed: int) -> None:
 
 
 def _one_hot(a: NDArray, num_actions: int) -> NDArray:
+    """One-hot encode the actions.
+
+    Args:
+        a (NDArray): The actions to encode.
+        num_actions (int): The number of actions.
+
+    Returns:
+        NDArray: The one-hot encoded actions.
+    """
     out = np.zeros((a.shape[0], num_actions), dtype=np.float32)
     out[np.arange(a.shape[0]), a.astype(int)] = 1.0
     return out
@@ -33,6 +47,13 @@ class MLPScalar(nn.Module):
     """Small scalar MLP (torch) used for g(x,a)."""
 
     def __init__(self, in_dim: int, hidden_sizes: Tuple[int, ...] = (64, 64), dropout: float = 0.0):
+        """Initialize the MLP scalar.
+
+        Args:
+            in_dim (int): The input dimension.
+            hidden_sizes (Tuple[int, ...], optional): The hidden sizes. Defaults to (64, 64).
+            dropout (float, optional): The dropout rate. Defaults to 0.0.
+        """
         super().__init__()
         layers = []
         prev = in_dim
@@ -46,6 +67,14 @@ class MLPScalar(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         return self.net(x).squeeze(-1)
 
 
@@ -53,14 +82,24 @@ class MLPScalar(nn.Module):
 class RIAdditiveRewardConfig:
     """Config for the residual-invariance-friendly reward model.
 
-    Model class:
-        q_hat(x, x_lag, a) = g_hat(x, a) + h_hat(x_lag)
-
-    Key point:
-      * h_hat is intentionally action-independent (same for all actions),
-        mirroring the construction in your 'old' simulation code.
-      * This makes the remaining reward-model error approximately
-        delta(x_lag, a), i.e., residual-invariant w.r.t. current X once (x_lag,a) is fixed.
+    Args:
+        n_folds (int, optional): The number of folds. Defaults to 2.
+        g_hidden (Tuple[int, ...], optional): The hidden sizes for the g-model. Defaults to (64, 64).
+        g_lr (float, optional): The learning rate for the g-model. Defaults to 1e-2.
+        g_weight_decay (float, optional): The weight decay for the g-model. Defaults to 1e-4.
+        g_batch_size (int, optional): The batch size for the g-model. Defaults to 256.
+        g_epochs (int, optional): The number of epochs for the g-model. Defaults to 120.
+        g_knn_k (int, optional): The number of nearest neighbors for the g-model. Defaults to 3.
+        h_hidden (Tuple[int, ...], optional): The hidden sizes for the h-model. Defaults to (50, 50).
+        h_max_iter (int, optional): The maximum number of iterations for the h-model. Defaults to 500.
+        h_alpha (float, optional): The alpha for the h-model. Defaults to 1e-4.
+        h_early_stopping (bool, optional): Whether to use early stopping for the h-model. Defaults to True.
+        h_validation_fraction (float, optional): The validation fraction for the h-model. Defaults to 0.2.
+        h_action_specific (bool, optional): Whether to use action-specific h-models. Defaults to True.
+        h_min_samples (int, optional): The minimum number of samples for the h-model. Defaults to 20.
+        dropout (float, optional): The dropout rate. Defaults to 0.0.
+        seed (int, optional): The seed. Defaults to 0.
+        device (str, optional): The device to use. Defaults to "cpu".
     """
 
     n_folds: int = 2
@@ -88,6 +127,16 @@ class RIAdditiveRewardConfig:
 
 
 def _make_folds(n: int, n_folds: int, seed: int) -> List[NDArray[np.int64]]:
+    """Make folds for cross-fitting.
+
+    Args:
+        n (int): The number of data points.
+        n_folds (int): The number of folds.
+        seed (int): The seed.
+
+    Returns:
+        List[NDArray[np.int64]]: The folds.
+    """
     if n_folds <= 1:
         return [np.arange(n, dtype=np.int64)]
     rng = np.random.RandomState(seed)
@@ -95,10 +144,17 @@ def _make_folds(n: int, n_folds: int, seed: int) -> List[NDArray[np.int64]]:
     return [np.sort(block).astype(np.int64) for block in np.array_split(perm, n_folds)]
 
 
-def _build_pairs_nn_by_action(
-    x_lag: NDArray, a: NDArray, k: int = 1
-) -> Tuple[NDArray[np.int64], NDArray[np.int64]]:
-    """For each sample, pick k-NN within the same action group (in x_lag space)."""
+def _build_pairs_nn_by_action(x_lag: NDArray, a: NDArray, k: int = 1) -> Tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """For each sample, pick k-NN within the same action group (in x_lag space).
+
+    Args:
+        x_lag (NDArray): The lagged features.
+        a (NDArray): The actions.
+        k (int, optional): The number of nearest neighbors. Defaults to 1.
+
+    Returns:
+        Tuple[NDArray[np.int64], NDArray[np.int64]]: The indices of the nearest neighbors.
+    """
     i_list = []
     j_list = []
     for act in np.unique(a):
@@ -127,7 +183,19 @@ def _train_g_pairwise(
     num_actions: int,
     cfg: RIAdditiveRewardConfig,
 ) -> MLPScalar:
-    """Train g(x,a) using pairwise differences within same action and similar lag."""
+    """Train g(x,a) using pairwise differences within same action and similar lag.
+
+    Args:
+        x (NDArray): The features.
+        x_lag (NDArray): The lagged features.
+        a (NDArray): The actions.
+        r (NDArray): The rewards.
+        num_actions (int): The number of actions.
+        cfg (RIAdditiveRewardConfig): The configuration.
+
+    Returns:
+        MLPScalar: The trained model.
+    """
     _set_torch_seed(cfg.seed)
 
     i_idx, j_idx = _build_pairs_nn_by_action(x_lag, a, k=cfg.g_knn_k)
@@ -162,7 +230,7 @@ def _train_g_pairwise(
     for ep in range(cfg.g_epochs):
         perm = torch.randperm(n_pairs, device=cfg.device)
         for s in range(0, n_pairs, bs):
-            b = perm[s : s + bs]
+            b = perm[s : s + bs]  # noqa: E203
             pred = model(X_i[b]) - model(X_j[b])
             loss = F.mse_loss(pred, y_t[b])
             opt.zero_grad(set_to_none=True)
@@ -178,7 +246,17 @@ def _predict_g_all_actions(
     num_actions: int,
     device: str,
 ) -> NDArray:
-    """Predict g(x,a) for all actions (n, num_actions)."""
+    """Predict g(x,a) for all actions (n, num_actions).
+
+    Args:
+        g_model (MLPScalar): The trained model.
+        x (NDArray): The features.
+        num_actions (int): The number of actions.
+        device (str): The device to use.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     n, d = x.shape
     x_rep = np.repeat(x.astype(np.float32), repeats=num_actions, axis=0)
     a_rep = np.tile(np.arange(num_actions, dtype=np.int64), reps=n)
@@ -196,6 +274,16 @@ def _fit_h_sklearn(
     residual: NDArray,
     cfg: RIAdditiveRewardConfig,
 ) -> Tuple[StandardScaler, MLPRegressor]:
+    """Fit the h-model.
+
+    Args:
+        x_lag (NDArray): The lagged features.
+        residual (NDArray): The residuals.
+        cfg (RIAdditiveRewardConfig): The configuration.
+
+    Returns:
+        Tuple[StandardScaler, MLPRegressor]: The fitted scaler and model.
+    """
     scaler = StandardScaler()
     X = scaler.fit_transform(x_lag)
     reg = MLPRegressor(
@@ -215,6 +303,16 @@ def _predict_h_sklearn(
     reg: MLPRegressor,
     x_lag: NDArray,
 ) -> NDArray:
+    """Predict the h-model.
+
+    Args:
+        scaler (StandardScaler): The fitted scaler.
+        reg (MLPRegressor): The fitted model.
+        x_lag (NDArray): The lagged features.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     X = scaler.transform(x_lag)
     return reg.predict(X).astype(np.float64)
 
@@ -226,6 +324,18 @@ def _fit_h_sklearn_actionwise(
     num_actions: int,
     cfg: RIAdditiveRewardConfig,
 ) -> Tuple[List[StandardScaler], List[MLPRegressor]]:
+    """Fit the h-model action-wise.
+
+    Args:
+        x_lag (NDArray): The lagged features.
+        residual (NDArray): The residuals.
+        a (NDArray): The actions.
+        num_actions (int): The number of actions.
+        cfg (RIAdditiveRewardConfig): The configuration.
+
+    Returns:
+        Tuple[List[StandardScaler], List[MLPRegressor]]: The fitted scalers and models.
+    """
     scalers: List[StandardScaler] = []
     regs: List[MLPRegressor] = []
     for action in range(num_actions):
@@ -258,6 +368,16 @@ def _predict_h_sklearn_actionwise(
     regs: List[MLPRegressor],
     x_lag: NDArray,
 ) -> NDArray:
+    """Predict the h-model action-wise.
+
+    Args:
+        scalers (List[StandardScaler]): The fitted scalers.
+        regs (List[MLPRegressor]): The fitted models.
+        x_lag (NDArray): The lagged features.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     num_actions = len(regs)
     n = x_lag.shape[0]
     out = np.zeros((n, num_actions), dtype=np.float64)
@@ -276,7 +396,20 @@ def train_predict_ri_additive_crossfit(
     cfg: RIAdditiveRewardConfig,
     folds: Optional[List[NDArray[np.int64]]] = None,
 ) -> Tuple[NDArray, Dict[str, float]]:
-    """Cross-fitted RI-additive reward model: q_hat(x,x_lag,a)=g_hat(x,a)+h_hat(x_lag)."""
+    """Cross-fitted RI-additive reward model: q_hat(x,x_lag,a)=g_hat(x,a)+h_hat(x_lag).
+
+    Args:
+        x (NDArray): The features.
+        x_lag (NDArray): The lagged features.
+        a (NDArray): The actions.
+        r (NDArray): The rewards.
+        num_actions (int): The number of actions.
+        cfg (RIAdditiveRewardConfig): The configuration.
+        folds (Optional[List[NDArray[np.int64]]]): The folds.
+
+    Returns:
+        Tuple[NDArray, Dict[str, float]]: The predicted rewards and information.
+    """
     n = x.shape[0]
     if folds is None:
         folds = _make_folds(n, cfg.n_folds, cfg.seed)
@@ -338,7 +471,16 @@ def estimate_alc_knn(
     x_lag: NDArray,
     a: NDArray,
 ) -> float:
-    """Cheap ALC proxy using 1-NN residual differences within action."""
+    """Cheap ALC proxy using 1-NN residual differences within action.
+
+    Args:
+        residual (NDArray): The residuals.
+        x_lag (NDArray): The lagged features.
+        a (NDArray): The actions.
+
+    Returns:
+        float: The estimated ALC.
+    """
     i_idx, j_idx = _build_pairs_nn_by_action(x_lag, a)
     if i_idx.size == 0:
         return 0.0
@@ -347,45 +489,103 @@ def estimate_alc_knn(
 
 
 class MTRIRewardModel(nn.Module):
+    """MTRI reward model (torch)."""
+
     def __init__(self, input_dim: int, num_actions: int, hidden_dim: int = 64):
+        """Initialize the MTRI reward model.
+
+        Args:
+            input_dim (int): The input dimension.
+            num_actions (int): The number of actions.
+            hidden_dim (int, optional): The hidden dimension. Defaults to 64.
+        """
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, num_actions)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         x = F.elu(self.fc1(x))
         x = F.elu(self.fc2(x))
         return self.fc3(x)
 
 
 class MTRICritic(nn.Module):
+    """MTRI critic (torch)."""
+
     def __init__(self, input_dim: int, hidden_dim: int = 64):
+        """Initialize the MTRI critic.
+
+        Args:
+            input_dim (int): The input dimension.
+            hidden_dim (int, optional): The hidden dimension. Defaults to 64.
+        """
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         x = F.elu(self.fc1(x))
         x = F.elu(self.fc2(x))
         return self.fc3(x).squeeze(-1)
 
 
 class MTRICentering(nn.Module):
+    """MTRI centering (torch)."""
+
     def __init__(self, input_dim: int, hidden_dim: int = 32):
+        """Initialize the MTRI centering.
+
+        Args:
+            input_dim (int): The input dimension.
+            hidden_dim (int, optional): The hidden dimension. Defaults to 32.
+        """
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+        """
         x = F.elu(self.fc1(x))
         x = F.elu(self.fc2(x))
         return self.fc3(x).squeeze(-1)
 
 
 def _subset_dataset(dataset: dict, indices: NDArray[np.int64]) -> dict:
+    """Subset the dataset.
+
+    Args:
+        dataset (dict): The dataset.
+        indices (NDArray[np.int64]): The indices.
+
+    Returns:
+        dict: The subset dataset.
+    """
     return dict(
         num_data=indices.shape[0],
         num_features=dataset["num_features"],
@@ -410,6 +610,24 @@ def train_reward_model_mtri_models(
     critic_reg: float = 1e-3,
     random_state: int = 42,
 ) -> Tuple[MTRIRewardModel, MTRICritic, MTRICentering]:
+    """Train the MTRI reward model.
+
+    Args:
+        dataset (dict): The dataset.
+        lambda_mtri (float, optional): The lambda for the MTRI reward model. Defaults to 1.0.
+        hidden_dim (int, optional): The hidden dimension. Defaults to 64.
+        critic_hidden_dim (int, optional): The hidden dimension for the critic. Defaults to 64.
+        centering_hidden_dim (int, optional): The hidden dimension for the centering. Defaults to 32.
+        lr (float, optional): The learning rate. Defaults to 1e-3.
+        batch_size (int, optional): The batch size. Defaults to 64.
+        num_epochs (int, optional): The number of epochs. Defaults to 100.
+        weight_decay (float, optional): The weight decay. Defaults to 1e-4.
+        critic_reg (float, optional): The regularization for the critic. Defaults to 1e-3.
+        random_state (int, optional): The random state. Defaults to 42.
+
+    Returns:
+        Tuple[MTRIRewardModel, MTRICritic, MTRICentering]: The trained reward model, critic, and centering.
+    """
     torch.manual_seed(random_state)
     x_t = torch.from_numpy(dataset["x_t"]).float()
     x_t_l = torch.from_numpy(dataset["x_t_l"]).float()
@@ -502,6 +720,16 @@ def predict_reward_model_mtri(
     x_t: NDArray,
     x_t_l: NDArray,
 ) -> NDArray:
+    """Predict the reward using the MTRI reward model.
+
+    Args:
+        reward_model (MTRIRewardModel): The reward model.
+        x_t (NDArray): The current features.
+        x_t_l (NDArray): The lagged features.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     reward_model.eval()
     inputs = torch.from_numpy(np.hstack([x_t, x_t_l])).float()
     with torch.no_grad():
@@ -518,6 +746,20 @@ def estimate_mtri_moment(
     residual: NDArray,
     num_actions: int,
 ) -> float:
+    """Estimate the moment using the MTRI reward model.
+
+    Args:
+        critic_model (MTRICritic): The critic model.
+        centering_model (MTRICentering): The centering model.
+        x_t (NDArray): The current features.
+        x_t_l (NDArray): The lagged features.
+        a_t (NDArray): The actions.
+        residual (NDArray): The residuals.
+        num_actions (int): The number of actions.
+
+    Returns:
+        float: The estimated moment.
+    """
     critic_model.eval()
     centering_model.eval()
     x_t_t = torch.from_numpy(x_t).float()
@@ -550,6 +792,26 @@ def train_reward_model_mtri_crossfit(
     random_state: int = 42,
     folds: Optional[List[NDArray[np.int64]]] = None,
 ) -> Tuple[NDArray, float, List[NDArray[np.int64]]]:
+    """Train the MTRI reward model cross-fitted.
+
+    Args:
+        dataset (dict): The dataset.
+        num_folds (int, optional): The number of folds. Defaults to 2.
+        lambda_mtri (float, optional): The lambda for the MTRI reward model. Defaults to 1.0.
+        hidden_dim (int, optional): The hidden dimension. Defaults to 64.
+        critic_hidden_dim (int, optional): The hidden dimension for the critic. Defaults to 64.
+        centering_hidden_dim (int, optional): The hidden dimension for the centering. Defaults to 32.
+        lr (float, optional): The learning rate. Defaults to 1e-3.
+        batch_size (int, optional): The batch size. Defaults to 64.
+        num_epochs (int, optional): The number of epochs. Defaults to 100.
+        weight_decay (float, optional): The weight decay. Defaults to 1e-4.
+        critic_reg (float, optional): The regularization for the critic. Defaults to 1e-3.
+        random_state (int, optional): The random state. Defaults to 42.
+        folds (Optional[List[NDArray[np.int64]]]): The folds.
+
+    Returns:
+        Tuple[NDArray, float, List[NDArray[np.int64]]]: The predicted rewards, ALC, and folds.
+    """
     num_data = dataset["num_data"]
     if folds is None:
         folds = _make_folds(num_data, num_folds, random_state)
@@ -618,6 +880,21 @@ def train_reward_model(
     weight_decay: float = 1e-4,
     random_state: int = 42,
 ) -> NDArray:
+    """Train the MTRI reward model.
+
+    Args:
+        dataset (dict): The dataset.
+        lambda_mtri (float, optional): The lambda for the MTRI reward model. Defaults to 1.0.
+        num_epochs (int, optional): The number of epochs. Defaults to 100.
+        hidden_dim (int, optional): The hidden dimension. Defaults to 64.
+        batch_size (int, optional): The batch size. Defaults to 64.
+        lr (float, optional): The learning rate. Defaults to 1e-3.
+        weight_decay (float, optional): The weight decay. Defaults to 1e-4.
+        random_state (int, optional): The random state. Defaults to 42.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     reward_model, _, _ = train_reward_model_mtri_models(
         dataset=dataset,
         lambda_mtri=lambda_mtri,
@@ -642,7 +919,18 @@ def fit_predict_by_MLP(
     hidden_layer_sizes: Tuple[int, ...] = (50, 50, 50),
     random_state: int = 42,
 ) -> NDArray:
-    """Estimate the reward function using an MLP on (x, a)."""
+    """Estimate the reward function using an MLP on (x, a).
+
+    Args:
+        features (NDArray): The features.
+        actions (NDArray): The actions.
+        rewards (NDArray): The rewards.
+        hidden_layer_sizes (Tuple[int, ...], optional): The hidden layer sizes. Defaults to (50, 50, 50).
+        random_state (int, optional): The random state. Defaults to 42.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     model = MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, random_state=random_state)
     X = np.hstack((features, actions[:, None]))
     scaler = StandardScaler()
@@ -659,7 +947,19 @@ def fit_predict_by_MLP_for_all_actions(
     hidden_layer_sizes: Tuple[int, ...] = (50, 50, 50),
     random_state: int = 42,
 ) -> NDArray:
-    """Estimate rewards using a single MLP on (x,a) and predict all actions."""
+    """Estimate rewards using a single MLP on (x,a) and predict all actions.
+
+    Args:
+        features (NDArray): The features.
+        actions (NDArray): The actions.
+        rewards (NDArray): The rewards.
+        num_actions (int): The number of actions.
+        hidden_layer_sizes (Tuple[int, ...], optional): The hidden layer sizes. Defaults to (50, 50, 50).
+        random_state (int, optional): The random state. Defaults to 42.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     model = MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, random_state=random_state)
     a_onehot = np.eye(num_actions)[actions]
     X = np.hstack((features, a_onehot))
@@ -686,7 +986,20 @@ def fit_predict_by_MLP_actionwise(
     random_state: int = 42,
     min_samples: int = 10,
 ) -> NDArray:
-    """Fit separate MLPs per action using only current features (misspecified by design)."""
+    """Fit separate MLPs per action using only current features (misspecified by design).
+
+    Args:
+        features (NDArray): The features.
+        actions (NDArray): The actions.
+        rewards (NDArray): The rewards.
+        num_actions (int): The number of actions.
+        hidden_layer_sizes (Tuple[int, ...], optional): The hidden layer sizes. Defaults to (30, 30).
+        random_state (int, optional): The random state. Defaults to 42.
+        min_samples (int, optional): The minimum number of samples. Defaults to 10.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     num_data = features.shape[0]
     q_hat = np.zeros((num_data, num_actions), dtype=np.float64)
 
@@ -715,7 +1028,22 @@ def fit_predict_by_MLP_actionwise_crossfit(
     min_samples: int = 10,
     folds: Optional[List[NDArray[np.int64]]] = None,
 ) -> NDArray:
-    """Cross-fitted actionwise MLP to avoid in-sample optimism."""
+    """Cross-fitted actionwise MLP to avoid in-sample optimism.
+
+    Args:
+        features (NDArray): The features.
+        actions (NDArray): The actions.
+        rewards (NDArray): The rewards.
+        num_actions (int): The number of actions.
+        n_folds (int, optional): The number of folds. Defaults to 2.
+        hidden_layer_sizes (Tuple[int, ...], optional): The hidden layer sizes. Defaults to (30, 30).
+        random_state (int, optional): The random state. Defaults to 42.
+        min_samples (int, optional): The minimum number of samples. Defaults to 10.
+        folds (Optional[List[NDArray[np.int64]]], optional): The folds. Defaults to None.
+
+    Returns:
+        NDArray: The predicted rewards.
+    """
     n = features.shape[0]
     if folds is None:
         folds = _make_folds(n, n_folds, random_state)

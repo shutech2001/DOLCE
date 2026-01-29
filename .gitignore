@@ -219,3 +219,6 @@ src/tests/test_ope.py
 src/tests/test_synthetic.py
 src/tests/test_estimating.py
 src/tests/test_utils.py
+
+# supp
+supp_*

@@ -203,3 +203,19 @@ result_*
 # temporary files
 src/ope/ope_models.py
 src/opl/opl_models.py
+
+# .DS_Store
+.DS_Store
+scripts/.DS_Store
+src/.DS_Store
+src/ope/.DS_Store
+src/opl/.DS_Store
+src/synthetic/.DS_Store
+src/estimating/.DS_Store
+src/utils/.DS_Store
+src/tests/.DS_Store
+src/tests/test_opl.py
+src/tests/test_ope.py
+src/tests/test_synthetic.py
+src/tests/test_estimating.py
+src/tests/test_utils.py

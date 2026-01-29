@@ -199,3 +199,7 @@ NWICU/
 # Outputs
 results/
 result_*
+
+# temporary files
+src/ope/ope_models.py
+src/opl/opl_models.py

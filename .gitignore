@@ -194,7 +194,7 @@ cython_debug/
 .cursorindexingignore
 
 # Data
-MIMIC-IV/
+NWICU/
 
 # Outputs
 results/

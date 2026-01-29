@@ -754,7 +754,7 @@ class DOLCE:
             if clip_value is None and pi_0_tensor_np is not None:
                 u_mass = unsupported_mass(pi_all.detach().cpu().numpy(), pi_0_tensor_np, eps=self.log_eps)
                 clip_value = adaptive_clip(u_mass)
-            total_term = 0.0
+            total_term = torch.tensor(0.0, device=x_t_tensor.device, dtype=x_t_tensor.dtype)
             for fold_idx in folds:
                 if self.num_folds <= 1:
                     train_idx = fold_idx
@@ -773,7 +773,7 @@ class DOLCE:
                 a_test = a_t_tensor[test_idx_t]
                 r_test = r_tensor[test_idx_t]
 
-                fold_term = 0.0
+                fold_term = torch.tensor(0.0, device=x_t_tensor.device, dtype=x_t_tensor.dtype)
                 for lag_idx, lag_tensor in enumerate(lag_tensors):
                     lag_train = lag_tensor[train_idx_t]
                     lag_test = lag_tensor[test_idx_t]

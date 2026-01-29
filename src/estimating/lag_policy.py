@@ -10,6 +10,8 @@ import torch
 from torch.types import Tensor
 from scipy.spatial.distance import cdist  # type: ignore
 
+from .reward import _make_folds
+
 
 @dataclass
 class LagPolicyMLPConfig:
@@ -35,24 +37,6 @@ class LagPolicyMLPConfig:
     alpha: float = 1e-4  # L2 penalty
     random_state: int = 0
     prob_floor: float = 1e-6
-
-
-def _make_folds(n: int, n_folds: int, seed: int) -> List[NDArray[np.int64]]:
-    """Make folds for cross-fitting.
-
-    Args:
-        n (int): Number of data points.
-        n_folds (int): Number of folds.
-        seed (int): Random state.
-
-    Returns:
-        List[NDArray[np.int64]]: List of fold indices.
-    """
-    if n_folds <= 1:
-        return [np.arange(n, dtype=np.int64)]
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(n)
-    return [np.sort(block).astype(np.int64) for block in np.array_split(perm, n_folds)]
 
 
 def _normalize_folds(

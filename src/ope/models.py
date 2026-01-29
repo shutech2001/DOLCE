@@ -5,7 +5,7 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 from numpy.typing import NDArray
 
-from estimating.lag_policy import LaggedPolicyEstimator, _make_folds
+from estimating.lag_policy import LaggedPolicyEstimator
 from estimating.reward import (
     RIAdditiveRewardConfig,
     estimate_alc_knn,
@@ -13,6 +13,7 @@ from estimating.reward import (
     fit_predict_by_MLP_for_all_actions,
     train_predict_ri_additive_crossfit,
     train_reward_model_mtri_crossfit,
+    _make_folds,
 )
 
 

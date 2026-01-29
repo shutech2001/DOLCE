@@ -174,9 +174,9 @@ class RegressionBasedPolicyLearner:
         if self.activation == "tanh":
             activation_layer: type[nn.Module] = nn.Tanh
         elif self.activation == "relu":
-            activation_layer: type[nn.Module] = nn.ReLU
+            activation_layer = nn.ReLU
         elif self.activation == "elu":
-            activation_layer: type[nn.Module] = nn.ELU
+            activation_layer = nn.ELU
         else:
             raise NotImplementedError("`activation` must be one of 'tanh', 'relu', or 'elu'")
 
@@ -211,7 +211,7 @@ class RegressionBasedPolicyLearner:
                 weight_decay=self.alpha,
             )
         elif self.solver == "adam":
-            optimizer: optim.Optimizer = optim.Adam(
+            optimizer = optim.Adam(
                 self.nn_model.parameters(),
                 lr=self.learning_rate_init,
                 weight_decay=self.alpha,
@@ -341,9 +341,9 @@ class GradientBasedPolicyLearner:
         if self.activation == "tanh":
             activation_layer: type[nn.Module] = nn.Tanh
         elif self.activation == "relu":
-            activation_layer: type[nn.Module] = nn.ReLU
+            activation_layer = nn.ReLU
         elif self.activation == "elu":
-            activation_layer: type[nn.Module] = nn.ELU
+            activation_layer = nn.ELU
         else:
             raise NotImplementedError("`activation` must be one of 'tanh', 'relu', or 'elu'")
 
@@ -556,9 +556,9 @@ class DOLCE:
         if self.activation == "tanh":
             activation_layer: type[nn.Module] = nn.Tanh
         elif self.activation == "relu":
-            activation_layer: type[nn.Module] = nn.ReLU
+            activation_layer = nn.ReLU
         elif self.activation == "elu":
-            activation_layer: type[nn.Module] = nn.ELU
+            activation_layer = nn.ELU
         else:
             raise NotImplementedError("`activation` must be one of 'tanh', 'relu', or 'elu'")
 
@@ -619,9 +619,9 @@ class DOLCE:
         if lag_features is None:
             lag_features_list: list[NDArray] = [dataset["x_t_l"]]
         elif isinstance(lag_features, list):
-            lag_features_list: list[NDArray] = lag_features
+            lag_features_list = lag_features
         else:
-            lag_features_list: list[NDArray] = [lag_features[i] for i in range(lag_features.shape[0])]
+            lag_features_list = [lag_features[i] for i in range(lag_features.shape[0])]
 
         folds: list[NDArray] = _make_folds(
             n=x_t.shape[0],
@@ -859,7 +859,7 @@ class DOLCE:
             actions_ref=actions_ref,
             num_actions=self.num_actions,
         )
-        bar_pi_0: Tensor = torch.clamp(bar_pi_0, min=self.log_eps)
+        bar_pi_0 = torch.clamp(bar_pi_0, min=self.log_eps)
         w: Tensor = bar_pi_theta.detach() / bar_pi_0
         if self.weight_clip is not None:
             w = torch.clamp(w, max=self.weight_clip)

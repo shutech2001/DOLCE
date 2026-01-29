@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque, OrderedDict
 from dataclasses import dataclass
-from typing import Deque, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -10,8 +10,8 @@ import torch
 from torch.types import Tensor
 import torch.nn as nn
 import torch.optim as optim
-from scipy.special import softmax
-from sklearn.utils import check_random_state
+from scipy.special import softmax  # type: ignore
+from sklearn.utils import check_random_state  # type: ignore
 
 from estimating.lag_policy import LaggedPolicyEstimatorTorch
 from estimating.reward import (
@@ -137,6 +137,23 @@ class DOLCEDataset(torch.utils.data.Dataset):
 
 @dataclass
 class RegressionBasedPolicyLearner:
+    """Regression-based policy learner.
+
+    Args:
+        num_features (int): The number of features.
+        num_actions (int): The number of actions.
+        hidden_layer_size (tuple, optional): The hidden layer size. Defaults to (30, 30, 30).
+        activation (str, optional): The activation function. Defaults to "elu".
+        batch_size (int, optional): The batch size. Defaults to 16.
+        learning_rate_init (float, optional): The learning rate. Defaults to 0.005.
+        gamma (float, optional): The gamma. Defaults to 0.98.
+        alpha (float, optional): The alpha. Defaults to 1e-6.
+        log_eps (float, optional): The log epsilon. Defaults to 1e-10.
+        solver (str, optional): The solver. Defaults to "adagrad".
+        max_iter (int, optional): The maximum number of iterations. Defaults to 30.
+        random_state (int, optional): The random state. Defaults to 42.
+    """
+
     num_features: int
     num_actions: int
     hidden_layer_size: tuple = (30, 30, 30)
@@ -151,15 +168,15 @@ class RegressionBasedPolicyLearner:
     random_state: int = 42
 
     def __post_init__(self) -> None:
-        layer_list = []
+        layer_list: List[Tuple[str, nn.Module]] = []
         input_size = self.num_features
 
         if self.activation == "tanh":
-            activation_layer = nn.Tanh
+            activation_layer: type[nn.Module] = nn.Tanh
         elif self.activation == "relu":
-            activation_layer = nn.ReLU
+            activation_layer: type[nn.Module] = nn.ReLU
         elif self.activation == "elu":
-            activation_layer = nn.ELU
+            activation_layer: type[nn.Module] = nn.ELU
         else:
             raise NotImplementedError("`activation` must be one of 'tanh', 'relu', or 'elu'")
 
@@ -172,29 +189,29 @@ class RegressionBasedPolicyLearner:
         self.nn_model = nn.Sequential(OrderedDict(layer_list))
 
         self.random_ = check_random_state(self.random_state)
-        self.train_loss = []
-        self.train_value = []
-        self.test_value = []
+        self.train_loss: List[float] = []
+        self.train_value: List[float] = []
+        self.test_value: List[float] = []
 
-    def fit(self, dataset: dict, dataset_test: dict) -> None:
+    def fit(self, dataset: Dict, dataset_test: Dict) -> None:
         """Fit the regression-based policy learner.
 
         Args:
-            dataset (dict): dataset
-            dataset_test (dict): test dataset
+            dataset (Dict): The dataset.
+            dataset_test (Dict): The test dataset.
         """
         x_t = dataset["x_t"]
         a_t = dataset["a_t"]
         r = dataset["r"]
 
         if self.solver == "adagrad":
-            optimizer = optim.Adagrad(
+            optimizer: optim.Optimizer = optim.Adagrad(
                 self.nn_model.parameters(),
                 lr=self.learning_rate_init,
                 weight_decay=self.alpha,
             )
         elif self.solver == "adam":
-            optimizer = optim.Adam(
+            optimizer: optim.Optimizer = optim.Adam(
                 self.nn_model.parameters(),
                 lr=self.learning_rate_init,
                 weight_decay=self.alpha,
@@ -241,21 +258,38 @@ class RegressionBasedPolicyLearner:
             Tuple[Tensor, Tensor, Tensor]: train data
         """
         dataset = RegressionBasedPolicyDataset(
-            torch.from_numpy(x_t).float(),
-            torch.from_numpy(a_t).long(),
-            torch.from_numpy(r).float(),
+            torch.from_numpy(x_t).float().to(torch.float32),
+            torch.from_numpy(a_t).long().to(torch.int64),
+            torch.from_numpy(r).float().to(torch.float32),
         )
 
         data_loader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size)
 
         return data_loader
 
-    def predict(self, dataset_test: dict, beta: float = 0.3) -> NDArray:
+    def predict(self, dataset_test: Dict, beta: float = 0.3) -> NDArray:
+        """Predict the policy.
+
+        Args:
+            dataset_test (Dict): The test dataset.
+            beta (float, optional): The beta. Defaults to 0.3.
+
+        Returns:
+            NDArray: The predicted policy.
+        """
         q_hat = self.predict_q(dataset_test)
 
         return softmax(beta * q_hat, axis=1)
 
-    def predict_q(self, dataset_test: dict) -> NDArray:
+    def predict_q(self, dataset_test: Dict) -> NDArray:
+        """Predict the Q-values.
+
+        Args:
+            dataset_test (Dict): The test dataset.
+
+        Returns:
+            NDArray: The predicted Q-values.
+        """
         self.nn_model.eval()
         x_t = torch.from_numpy(dataset_test["x_t"]).float()
 
@@ -301,15 +335,15 @@ class GradientBasedPolicyLearner:
     random_state: int = 42
 
     def __post_init__(self) -> None:
-        layer_list = []
+        layer_list: List[Tuple[str, nn.Module]] = []
         input_size = self.num_features
 
         if self.activation == "tanh":
-            activation_layer = nn.Tanh
+            activation_layer: type[nn.Module] = nn.Tanh
         elif self.activation == "relu":
-            activation_layer = nn.ReLU
+            activation_layer: type[nn.Module] = nn.ReLU
         elif self.activation == "elu":
-            activation_layer = nn.ELU
+            activation_layer: type[nn.Module] = nn.ELU
         else:
             raise NotImplementedError("`activation` must be one of 'tanh', 'relu', or 'elu'")
 
@@ -323,19 +357,22 @@ class GradientBasedPolicyLearner:
         self.nn_model = nn.Sequential(OrderedDict(layer_list))
 
         self.random = check_random_state(self.random_state)
-        self.train_loss = []
-        self.train_value = []
-        self.test_value = []
+        self.train_loss: List[float] = []
+        self.train_value: List[float] = []
+        self.test_value: List[float] = []
 
-    def fit(self, dataset: dict, dataset_test: dict, q_hat: Optional[NDArray] = None) -> None:
+    def fit(self, dataset: Dict, dataset_test: Dict, q_hat: Optional[NDArray] = None) -> None:
         """Fit the gradient-based policy learner.
 
         Args:
-            dataset (dict): dataset
-            dataset_test (dict): test dataset
-            q_hat (Optional[NDArray], optional): estimated rewards. Defaults to None.
+            dataset (dict): The dataset.
+            dataset_test (dict): The test dataset.
+            q_hat (Optional[NDArray], optional): The estimated rewards. Defaults to None.
+
+        Raises:
+            NotImplementedError: The solver must be one of 'adam' or 'adagrad'.
         """
-        x_t = dataset["x_t"]
+        x_t: NDArray = dataset["x_t"]
         a_t = dataset["a_t"]
         r = dataset["r"]
         pi_0 = dataset["pi_0"]
@@ -517,11 +554,11 @@ class DOLCE:
         input_size = self.num_features
 
         if self.activation == "tanh":
-            activation_layer: nn.Module = nn.Tanh
+            activation_layer: type[nn.Module] = nn.Tanh
         elif self.activation == "relu":
-            activation_layer: nn.Module = nn.ReLU
+            activation_layer: type[nn.Module] = nn.ReLU
         elif self.activation == "elu":
-            activation_layer: nn.Module = nn.ELU
+            activation_layer: type[nn.Module] = nn.ELU
         else:
             raise NotImplementedError("`activation` must be one of 'tanh', 'relu', or 'elu'")
 
@@ -541,8 +578,8 @@ class DOLCE:
 
     def fit(
         self,
-        dataset: dict,
-        dataset_test: dict,
+        dataset: Dict,
+        dataset_test: Dict,
         q_hat: Optional[NDArray | list[NDArray]] = None,
         alc_values: Optional[list[float]] = None,
         lambda_mtri: float = 1.0,
@@ -557,22 +594,23 @@ class DOLCE:
         """Fit the DOLCE.
 
         Args:
-            dataset (dict): dataset
-            dataset_test (dict): test dataset
-            q_hat (Optional[NDArray | list[NDArray]], optional): estimated rewards. Defaults to None.
-            alc_values (Optional[list[float]], optional): lag-marginalized values. Defaults to None.
-            lambda_mtri (float, optional): lambda for MTRI. Defaults to 1.0.
-            mtri_epochs (int, optional): number of epochs for MTRI. Defaults to 100.
-            mtri_hidden_dim (int, optional): hidden dimension for MTRI. Defaults to 64.
-            mtri_batch_size (int, optional): batch size for MTRI. Defaults to 64.
-            mtri_lr (float, optional): learning rate for MTRI. Defaults to 1e-3.
-            mtri_weight_decay (float, optional): weight decay for MTRI. Defaults to 1e-4.
-            tau (Optional[float], optional): tau. Defaults to None.
+            dataset (dict): The dataset.
+            dataset_test (dict): The test dataset.
+            q_hat (Optional[NDArray  |  list[NDArray]], optional): The estimated rewards. Defaults to None.
+            alc_values (Optional[list[float]], optional): The lag-marginalized values. Defaults to None.
+            lambda_mtri (float, optional): The lambda for MTRI. Defaults to 1.0.
+            mtri_epochs (int, optional): The number of epochs for MTRI. Defaults to 100.
+            mtri_hidden_dim (int, optional): The hidden dimension for MTRI. Defaults to 64.
+            mtri_batch_size (int, optional): The batch size for MTRI. Defaults to 64.
+            mtri_lr (float, optional): The learning rate for MTRI. Defaults to 1e-3.
+            mtri_weight_decay (float, optional): The weight decay for MTRI. Defaults to 1e-4.
+            tau (Optional[float], optional): The tau. Defaults to None.
+            reward_cfg (Optional[RIAdditiveRewardConfig], optional): The reward configuration. Defaults to None.
 
         Raises:
-            ValueError: q_hat must match the number of lag feature sets.
-            ValueError: alc_values must match the number of lag feature sets.
-            NotImplementedError: `solver` must be one of 'adam' or 'adagrad'
+            ValueError: The q_hat must match the number of lag feature sets.
+            ValueError: The alc_values must match the number of lag feature sets.
+            NotImplementedError: The solver must be one of 'adam' or 'adagrad'.
         """
         x_t: NDArray = dataset["x_t"]
         a_t: NDArray = dataset["a_t"]
@@ -759,7 +797,6 @@ class DOLCE:
 
                     term = w_factual * (r_test - q_hat_factual) * log_bar_pi_factual
 
-                    # IMPORTANT:
                     # The second term corresponds to the policy-gradient component
                     #   sum_a pi_theta(a|x) q_hat(x,lag,a) s_theta(a|x).
                     # If we implement it via a surrogate objective with log-probabilities,

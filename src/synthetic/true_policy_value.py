@@ -10,7 +10,6 @@ from utils.utils import eps_greedy_policy
 def calc_true_value(
     num_features: int,
     num_actions: int,
-    non_overlap_ratio: float,
     lambda_: float,
     eta: float = 0.0,
     beta: float = 0.3,
@@ -23,10 +22,24 @@ def calc_true_value(
 ) -> float:
     """Calculate the true value of the epsilon-greedy policy (Monte Carlo).
 
-    The true value is independent of non_overlap_ratio, since overlap affects only logging.
-    We keep the argument for API compatibility with existing simulation scripts.
+    Args:
+        num_features (int): Number of features.
+        num_actions (int): Number of actions.
+        lambda_ (float): Mixture weight for reward as function of current vs. lagged features.
+        eta (float, optional): Weight for u(x_t, x_t_l, a) interaction term in reward. Defaults to 0.0.
+        beta (float, optional): Parameter for non-overlap boundary. Defaults to 0.3.
+        random_state (int, optional): RNG seed for data generating process. Defaults to 42.
+        env_random_state (int, optional): RNG seed for reward function/environment. Defaults to 0.
+        num_mc (int, optional): Number of Monte Carlo samples. Defaults to 100000.
+        logging_eps (float, optional): Exploration parameter for logging policy. Defaults to 0.0.
+        x_t_dep (float, optional):
+            Correlation between lagged and current features (0: independent, 1: identical). Defaults to 1.0.
+        lag_scale (float, optional): Standard deviation multiplier for lagged features. Defaults to 1.0.
+
+    Returns:
+        float: The true value of the epsilon-greedy policy.
     """
-    test_data = generate_synthetic_data(
+    test_data: Dict = generate_synthetic_data(
         num_data=num_mc,
         num_features=num_features,
         num_actions=num_actions,
@@ -40,9 +53,9 @@ def calc_true_value(
         x_t_dep=x_t_dep,
         lag_scale=lag_scale,
     )
-    q = test_data["q"]
+    q: NDArray = test_data["q"]
     # Target policy uses only current-context component when available.
-    q_for_pi = test_data.get("g_x_t_a_t", q)
-    pi = eps_greedy_policy(q_for_pi)
+    q_for_pi: NDArray = test_data.get("g_x_t_a_t", q)
+    pi: NDArray = eps_greedy_policy(q_for_pi)
     # Value is always with respect to the true reward q.
     return float((q * pi).sum(1).mean())

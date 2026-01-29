@@ -22,7 +22,7 @@ def generate_synthetic_data(
     logging_eps: float = 0.0,
     x_t_dep: float = 1.0,
     lag_scale: float = 1.0,
-) -> Dict[str, NDArray]:
+) -> Dict:
     """
     Generates synthetic contextual bandit data with customizable feature distributions,
     action spaces, and non-overlap support for offline RL/off-policy evaluation.
@@ -39,13 +39,15 @@ def generate_synthetic_data(
         num_features (int, optional): Number of contextual features. Defaults to 5.
         num_actions (int, optional): Number of possible actions. Defaults to 2.
         non_overlap_ratio (float, optional): Proportion of data where action supports do not overlap. Defaults to 0.5.
-        lambda_ (float, optional): Mixture weight for reward as function of current vs. lagged features. Defaults to 0.5.
+        lambda_ (float, optional):
+            Mixture weight for reward as function of current vs. lagged features. Defaults to 0.5.
         eta (float, optional): Weight for u(x_t, x_t_l, a) interaction term in reward. Defaults to 0.0.
         beta (float, optional): Parameter for non-overlap boundary. Defaults to 0.3.
         random_state (int, optional): RNG seed for data generating process. Defaults to 42.
         env_random_state (int, optional): RNG seed for reward function/environment. Defaults to 0.
         logging_eps (float, optional): Exploration parameter for logging policy. Defaults to 0.0.
-        x_t_dep (float, optional): Correlation between lagged and current features (0: independent, 1: identical). Defaults to 1.0.
+        x_t_dep (float, optional):
+            Correlation between lagged and current features (0: independent, 1: identical). Defaults to 1.0.
         lag_scale (float, optional): Standard deviation multiplier for lagged features. Defaults to 1.0.
 
     Raises:
@@ -53,7 +55,7 @@ def generate_synthetic_data(
         ValueError: If num_actions < 2.
 
     Returns:
-        Dict[str, NDArray]: Dictionary containing generated features, actions, rewards,
+        Dict: Dictionary containing generated features, actions, rewards,
               logged propensities, and other metadata for offline RL evaluation.
     """
     if num_features < 1:
@@ -109,7 +111,7 @@ def generate_synthetic_data(
             reward_if_not_action = rng_env.uniform(-0.1, 0.1)
             h_x_t_l_a_t[:, a] += np.where(x_t_l[:, x] > 0.5, reward_if_action, reward_if_not_action)
 
-    large_count: NDArray = np.sum(x_t_l[:, 1 : num_features - 1] > 0.5, axis=1)  # noqa: E203
+    large_count = np.sum(x_t_l[:, 1 : num_features - 1] > 0.5, axis=1)  # noqa: E203
     h_x_t_l_a_t[:, 0] += np.where(large_count >= 2, -0.7, 0)
     for a in range(1, num_actions):
         reward_if_action = rng_env.uniform(0.7, 1.3)

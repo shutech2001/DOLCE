@@ -1,3 +1,8 @@
+from .grad import (  # noqa: F401
+    estimate_ips_gradient,
+    estimate_dr_gradient,
+    estimate_dolce_gradient,
+)
 from .lag_policy import LaggedPolicyEstimator, LaggedPolicyEstimatorNumpy, LaggedPolicyEstimatorTorch  # noqa: F401
 from .reward import (  # noqa: F401
     RIAdditiveRewardConfig,
@@ -15,5 +20,6 @@ from .reward import (  # noqa: F401
     fit_predict_by_MLP_for_all_actions,
     fit_predict_by_MLP_actionwise,
     fit_predict_by_MLP_actionwise_crossfit,
+    _make_folds,
 )
 from .overlap_adaptive import adaptive_clip, unsupported_mass  # noqa: F401

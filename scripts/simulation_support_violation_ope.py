@@ -34,13 +34,6 @@ def main() -> None:
     parser.add_argument("--num-actions", type=int, default=5)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=0.5)
     parser.add_argument("--eta", type=float, default=0.0)
-    parser.add_argument(
-        "--target-eps",
-        dest="target_eps",
-        type=float,
-        default=0.1,
-        help="epsilon for the epsilon-greedy target policy used in OPE",
-    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--values",
@@ -48,6 +41,11 @@ def main() -> None:
         default="0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9",
         help="comma-separated values",
     )
+    parser.add_argument("--num-test-data", type=int, default=200000)
+    parser.add_argument("--test-seed", type=int, default=999)
+    parser.add_argument("--env-seed", type=int, default=7)
+    parser.add_argument("--x-dep", type=float, default=1.0)
+    parser.add_argument("--lag-scale", type=float, default=2.0)
     parser.add_argument(
         "--output",
         type=str,

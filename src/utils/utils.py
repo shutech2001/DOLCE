@@ -5,6 +5,8 @@ from typing import List
 import numpy as np
 from numpy.typing import NDArray
 from scipy.stats import rankdata  # type: ignore
+import torch
+from torch.types import Tensor
 
 
 def parse_comma_separated_list(raw: str) -> List:
@@ -29,6 +31,24 @@ def parse_comma_separated_list(raw: str) -> List:
     if not values:
         raise ValueError("values are empty")
     return values
+
+
+def flatten_grads(model: torch.nn.Module) -> NDArray:
+    """Flatten the gradients of a model.
+
+    Args:
+        model (torch.nn.Module): The model.
+
+    Returns:
+        NDArray: The flattened gradients.
+    """
+    grads: List[Tensor] = []
+    for param in model.parameters():
+        if param.grad is None:
+            grads.append(torch.zeros_like(param).view(-1))
+        else:
+            grads.append(param.grad.detach().view(-1))
+    return torch.cat(grads).cpu().numpy()
 
 
 def eps_greedy_policy(
@@ -67,3 +87,19 @@ def sample_action(pi: NDArray, random_state: int = 42) -> NDArray:
     flg: NDArray = cum_pi > uniform_rvs
     actions: NDArray = flg.argmax(axis=1)
     return actions
+
+
+def apply_flat_grad(model: torch.nn.Module, flat_grad: NDArray, step_size: float) -> None:
+    """Apply a flat gradient to a model.
+
+    Args:
+        model (torch.nn.Module): The model.
+        flat_grad (NDArray): The flat gradient.
+        step_size (float): The step size.
+    """
+    offset: int = 0
+    for param in model.parameters():
+        numel = param.numel()
+        grad_slice = flat_grad[offset : offset + numel].reshape(param.shape)  # noqa: E203
+        param.data.add_(torch.from_numpy(grad_slice).to(param.data) * step_size)
+        offset += numel

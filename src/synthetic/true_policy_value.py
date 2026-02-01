@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from typing import Dict
+
 from numpy.typing import NDArray
+import torch
+from torch.types import Tensor
 
 from .generate import generate_synthetic_data
-from utils.utils import eps_greedy_policy
+from utils.utils import eps_greedy_policy, flatten_grads
 
 
 def calc_true_value(
@@ -59,3 +62,27 @@ def calc_true_value(
     pi: NDArray = eps_greedy_policy(q_for_pi)
     # Value is always with respect to the true reward q.
     return float((q * pi).sum(1).mean())
+
+
+def estimate_true_gradient(
+    model: torch.nn.Module,
+    x_t: NDArray,
+    q: NDArray,
+) -> NDArray:
+    """Estimate the gradient of the true value with respect to the model parameters.
+
+    Args:
+        model (torch.nn.Module): The model.
+        x_t (NDArray): The current features.
+        q (NDArray): The true rewards.
+
+    Returns:
+        NDArray: The gradient of the true value with respect to the model parameters.
+    """
+    model.zero_grad(set_to_none=True)
+    x_t_tensor: Tensor = torch.from_numpy(x_t).float()
+    q_tensor: Tensor = torch.from_numpy(q).float()
+    pi: Tensor = model(x_t_tensor)
+    value: Tensor = (pi * q_tensor).sum(1).mean()
+    value.backward()
+    return flatten_grads(model)

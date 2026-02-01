@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import pickle
 import os
-import sys
-import warnings
 from pathlib import Path
+import pickle
+import sys
+from typing import List, Tuple
+import warnings
 
 import matplotlib as mpl
 from matplotlib.lines import Line2D
@@ -25,36 +26,151 @@ from utils import eps_greedy_policy, parse_comma_separated_list  # noqa: E402
 
 warnings.filterwarnings("ignore")
 
+SWEEP_DEFAULT_VALUES = {
+    "support_violation": "0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9",
+    "num_data": "500,1000,3000,5000,7000,10000",
+    "num_actions": "2,5,10,30,50,100",
+    "lambda": "0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0",
+    "eta": "0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0",
+}
+SWEEP_X_LABELS = {
+    "support_violation": "support violation ratio",
+    "num_data": "logged data size",
+    "num_actions": "number of actions",
+    "lambda": r"$\lambda$",
+    "eta": r"$\eta$",
+}
+SWEEP_X_COLUMNS = {
+    "support_violation": "support_violation_ratio",
+    "num_data": "num_data",
+    "num_actions": "num_actions",
+    "lambda": "lambda_",
+    "eta": "eta",
+}
+SWEEP_VALUE_CAST = {
+    "support_violation": float,
+    "num_data": int,
+    "num_actions": int,
+    "lambda": float,
+    "eta": float,
+}
+
+
+def _resolve_sweep_values(raw: str | None, sweep: str) -> List[int | float]:
+    """Resolve the sweep values.
+
+    Args:
+        raw (str | None): The raw values.
+        sweep (str): The sweep.
+
+    Returns:
+        List[int | float]: The resolved values.
+    """
+    if raw is None:
+        raw = SWEEP_DEFAULT_VALUES[sweep]
+    values = parse_comma_separated_list(raw)
+    cast = SWEEP_VALUE_CAST[sweep]
+    if cast is int:
+        return [int(round(v)) for v in values]
+    return [float(np.round(v, 10)) for v in values]
+
+
+def _resolve_config(args: argparse.Namespace, sweep_value: int | float) -> Tuple[int, int, float, float, float]:
+    """Resolve the config.
+
+    Args:
+        args (argparse.Namespace): The arguments.
+        sweep_value (int | float): The sweep value.
+
+    Returns:
+        Tuple[int, int, float, float, float]: The resolved config.
+    """
+    num_data = args.num_data
+    num_actions = args.num_actions
+    lambda_ = args.lambda_
+    eta = args.eta
+    non_overlap_ratio = args.support_violation
+
+    if args.sweep == "support_violation":
+        non_overlap_ratio = float(sweep_value)
+    elif args.sweep == "num_data":
+        num_data = int(sweep_value)
+    elif args.sweep == "num_actions":
+        num_actions = int(sweep_value)
+    elif args.sweep == "lambda":
+        lambda_ = float(sweep_value)
+    elif args.sweep == "eta":
+        eta = float(sweep_value)
+
+    return num_data, num_actions, lambda_, eta, non_overlap_ratio
+
+
+def _x_value(sweep: str, value: int | float) -> int | float:
+    """Convert the value to an x value.
+
+    Args:
+        sweep (str): The sweep.
+        value (int | float): The value.
+
+    Returns:
+        int | float: The x value.
+    """
+    if sweep == "support_violation":
+        return int(round(float(value) * 100))
+    return value
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OPE simulation for support violation ratios.")
-    parser.add_argument("--num-sim", type=int, default=100)
-    parser.add_argument("--num-data", type=int, default=1000)
-    parser.add_argument("--num-features", type=int, default=5)
-    parser.add_argument("--num-actions", type=int, default=5)
-    parser.add_argument("--lambda", dest="lambda_", type=float, default=0.5)
-    parser.add_argument("--eta", type=float, default=0.0)
-    parser.add_argument("--seed", type=int, default=42)
+    parser = argparse.ArgumentParser(description="OPE simulation for support violation and parameter sweeps.")
+    parser.add_argument(
+        "--sweep",
+        type=str,
+        default="support_violation",
+        choices=sorted(SWEEP_DEFAULT_VALUES.keys()),
+        help="parameter to sweep",
+    )
+    parser.add_argument("--num-sim", type=int, default=100, help="number of simulations")
+    parser.add_argument("--num-data", type=int, default=1000, help="logged data size")
+    parser.add_argument("--num-features", type=int, default=5, help="number of features")
+    parser.add_argument("--num-actions", type=int, default=5, help="number of actions")
+    parser.add_argument(
+        "--lambda",
+        dest="lambda_",
+        type=float,
+        default=0.5,
+        help="mixture weight for reward as function of current vs. lagged features",
+    )
+    parser.add_argument("--eta", type=float, default=0.0, help="weight for u(x_t, x_t_l, a) interaction term in reward")
+    parser.add_argument("--seed", type=int, default=42, help="data seed base (contexts + reward noise)")
+    parser.add_argument(
+        "--support-violation",
+        type=float,
+        default=0.0,
+        help="support violation ratio when sweep != support_violation",
+    )
     parser.add_argument(
         "--values",
         type=str,
-        default="0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9",
-        help="comma-separated values",
+        default=None,
+        help="comma-separated values for sweep (default depends on --sweep)",
     )
-    parser.add_argument("--num-test-data", type=int, default=200000)
-    parser.add_argument("--test-seed", type=int, default=999)
-    parser.add_argument("--env-seed", type=int, default=7)
-    parser.add_argument("--x-dep", type=float, default=1.0)
-    parser.add_argument("--lag-scale", type=float, default=2.0)
+    parser.add_argument("--num-test-data", type=int, default=200000, help="test data size")
+    parser.add_argument("--test-seed", type=int, default=999, help="test context seed")
+    parser.add_argument("--env-seed", type=int, default=7, help="environment seed (reward function)")
+    parser.add_argument(
+        "--x-dep", type=float, default=1.0, help="dependence strength of x_t on x_{t-l} (0 = independent)"
+    )
+    parser.add_argument("--lag-scale", type=float, default=2.0, help="scale factor for lag reward component (h)")
     parser.add_argument(
         "--output",
         type=str,
-        default="results/result_df_support_violation_ope.pkl",
+        default=None,
+        help="output path for summary results",
     )
     parser.add_argument(
         "--output-raw",
         type=str,
-        default="results/result_df_support_violation_ope_raw.pkl",
+        default=None,
         help="optional path for raw per-simulation results",
     )
     parser.add_argument(
@@ -63,37 +179,53 @@ def main() -> None:
         default="results/plots",
         help="optional directory to save plots",
     )
-    parser.add_argument("--show-summary", action="store_true")
+    parser.add_argument("--show-summary", action="store_true", help="show summary of results")
     args = parser.parse_args()
 
-    value_list = parse_comma_separated_list(args.values)
+    sweep_values = _resolve_sweep_values(args.values, args.sweep)
+    x_col = SWEEP_X_COLUMNS[args.sweep]
+    x_label = SWEEP_X_LABELS[args.sweep]
 
-    # IMPORTANT: compute true value once for a fixed environment (env_seed), independent of support violation.
-    true_value = calc_true_value(
-        num_features=args.num_features,
-        num_actions=args.num_actions,
-        lambda_=args.lambda_,
-        eta=args.eta,
-        num_mc=args.num_test_data,
-        random_state=args.test_seed,
-        env_random_state=args.env_seed,
-        x_t_dep=args.x_dep,
-        lag_scale=args.lag_scale,
-    )
+    if args.output is None:
+        args.output = f"results/result_df_{args.sweep}_ope.pkl"
+    if args.output_raw is None:
+        args.output_raw = f"results/result_df_{args.sweep}_ope_raw.pkl"
 
-    summary_list = []
+    true_value_cache: dict = {}
+
+    def _get_true_value(num_actions: int, lambda_: float, eta: float) -> float:
+        key = (num_actions, lambda_, eta)
+        if key not in true_value_cache:
+            true_value_cache[key] = calc_true_value(
+                num_features=args.num_features,
+                num_actions=num_actions,
+                lambda_=lambda_,
+                eta=eta,
+                num_mc=args.num_test_data,
+                random_state=args.test_seed,
+                env_random_state=args.env_seed,
+                x_t_dep=args.x_dep,
+                lag_scale=args.lag_scale,
+            )
+        return float(true_value_cache[key])
+
     raw_rows = []
-    for value in value_list:
-        for sim in tqdm(range(args.num_sim), desc=f"support_violation={int(value*100)}"):
+    for value in sweep_values:
+        num_data, num_actions, lambda_, eta, non_overlap_ratio = _resolve_config(args, value)
+        support_violation_ratio = int(round(non_overlap_ratio * 100))
+        true_value = _get_true_value(num_actions, lambda_, eta)
+        desc_value = _x_value(args.sweep, value)
+
+        for sim in tqdm(range(args.num_sim), desc=f"{args.sweep}={desc_value}"):
             data_seed = args.seed + sim * 100
 
             logged_data = generate_synthetic_data(
-                num_data=args.num_data,
+                num_data=num_data,
                 num_features=args.num_features,
-                num_actions=args.num_actions,
-                non_overlap_ratio=value,
-                lambda_=args.lambda_,
-                eta=args.eta,
+                num_actions=num_actions,
+                non_overlap_ratio=non_overlap_ratio,
+                lambda_=lambda_,
+                eta=eta,
                 random_state=data_seed,
                 env_random_state=args.env_seed,
                 x_t_dep=args.x_dep,
@@ -144,7 +276,6 @@ def main() -> None:
                     ci_high = estimate + 1.96 * se
                 raw_rows.append(
                     dict(
-                        support_violation_ratio=int(value * 100),
                         method=method,
                         value=estimate,
                         error=estimate - true_value,
@@ -153,36 +284,38 @@ def main() -> None:
                         ci_high=ci_high,
                         covered=ci_low <= true_value <= ci_high,
                         true_value=true_value,
-                        num_data=args.num_data,
-                        num_actions=args.num_actions,
-                        lambda_=args.lambda_,
-                        eta=args.eta,
+                        support_violation_ratio=support_violation_ratio,
+                        num_data=num_data,
+                        num_actions=num_actions,
+                        lambda_=lambda_,
+                        eta=eta,
                         lag_scale=args.lag_scale,
                         env_seed=args.env_seed,
                     )
                 )
 
-        ratio_df = pd.DataFrame([r for r in raw_rows if r["support_violation_ratio"] == int(value * 100)])
-        grouped = ratio_df.groupby("method")
-
-        summary = grouped["value"].agg(["mean"]).rename(columns={"mean": "mean_value"})
-        summary["mse"] = grouped["error"].apply(lambda x: float(np.mean(x**2)))
-        summary["bias"] = grouped["error"].mean()
-        summary["variance"] = grouped["value"].apply(lambda x: float(np.var(x, ddof=0)))
-        summary["coverage"] = grouped["covered"].mean()
-        summary = summary.reset_index()
-
-        summary["support_violation_ratio"] = int(value * 100)
-        summary["true_value"] = true_value
-        summary["num_data"] = args.num_data
-        summary["num_actions"] = args.num_actions
-        summary["lambda_"] = args.lambda_
-        summary["eta"] = args.eta
-        summary["lag_scale"] = args.lag_scale
-        summary["env_seed"] = args.env_seed
-        summary_list.append(summary)
-
-    summary_df = pd.concat(summary_list, ignore_index=True)
+    raw_df = pd.DataFrame(raw_rows)
+    group_cols = [x_col, "method"]
+    agg = {
+        "mean_value": ("value", "mean"),
+        "mse": ("error", lambda x: float(np.mean(x**2))),
+        "bias": ("error", "mean"),
+        "variance": ("value", lambda x: float(np.var(x, ddof=0))),
+        "coverage": ("covered", "mean"),
+        "true_value": ("true_value", "first"),
+    }
+    for col in [
+        "support_violation_ratio",
+        "num_data",
+        "num_actions",
+        "lambda_",
+        "eta",
+        "lag_scale",
+        "env_seed",
+    ]:
+        if col not in group_cols:
+            agg[col] = (col, "first")
+    summary_df = raw_df.groupby(group_cols).agg(**agg).reset_index()
     output_path = Path(args.output)
     with open(output_path, "wb") as f:
         pickle.dump(summary_df, f)
@@ -193,6 +326,8 @@ def main() -> None:
             pickle.dump(pd.DataFrame(raw_rows), f)
 
     if args.plot_dir:
+        os.makedirs(args.plot_dir, exist_ok=True)
+        # plot settings
         preferred_font = "Times New Roman"
         available_fonts = {f.name for f in fm.fontManager.ttflist}
         serif_list = (
@@ -224,7 +359,7 @@ def main() -> None:
         colors = {"DM": "blue", "IPS": "red", "DR": "purple", "DOLCE": "green"}
 
         # aggregate to avoid duplicate values
-        plot_df = summary_df.groupby(["method", "support_violation_ratio"], as_index=False).agg(
+        plot_df = summary_df.groupby(["method", x_col], as_index=False).agg(
             {
                 "mse": "mean",
                 "bias": "mean",
@@ -234,8 +369,8 @@ def main() -> None:
         )
 
         # convert to numeric and sort (support_violation_ratio is object)
-        plot_df["support_violation_ratio"] = pd.to_numeric(plot_df["support_violation_ratio"])
-        plot_df = plot_df.sort_values(["method", "support_violation_ratio"])
+        plot_df[x_col] = pd.to_numeric(plot_df[x_col])
+        plot_df = plot_df.sort_values(["method", x_col])
 
         # Figure (1x4): (a)=MSE, (b)=bias, (c)=variance, (d)=coverage
         fig, (ax_mse, ax_bias, ax_var, ax_cov) = plt.subplots(1, 4, figsize=(12.0, 3.0), sharex=True)
@@ -248,8 +383,8 @@ def main() -> None:
 
         # plot each method
         for m in order:
-            sub = plot_df[plot_df["method"] == m].sort_values("support_violation_ratio")
-            x = sub["support_violation_ratio"].to_numpy()
+            sub = plot_df[plot_df["method"] == m].sort_values(x_col)
+            x = sub[x_col].to_numpy()
 
             ax_mse.plot(
                 x,
@@ -289,7 +424,7 @@ def main() -> None:
             )
 
         for ax in (ax_mse, ax_bias, ax_var, ax_cov):
-            ax.set_xlabel("support violation ratio")
+            ax.set_xlabel(x_label)
             ax.tick_params(direction="in", length=4, width=0.8)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
@@ -331,7 +466,7 @@ def main() -> None:
             handletextpad=0.5,
         )
         fig.tight_layout(rect=(0, 0, 1, 0.88))
-        fig.savefig(args.plot_dir + "/ope_support_violation.pdf", bbox_inches="tight")
+        fig.savefig(args.plot_dir + f"/ope_{args.sweep}.pdf", bbox_inches="tight")
 
     if args.show_summary:
         print(summary_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
